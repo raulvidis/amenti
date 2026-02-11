@@ -150,6 +150,14 @@ amenti stats
 amenti identity "Becoming more proactive about reaching out" --trigger "User feedback on check-ins"
 ```
 
+### Export
+
+```bash
+# Export all memories as JSON
+amenti export
+amenti export --type skill
+```
+
 ## Multi-Agent
 
 Set `AMENTI_AGENT` to scope all operations to a specific agent:

@@ -86,6 +86,20 @@ check_db() {
     fi
 }
 
+validate_int() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error:${NC} $2 must be a positive integer"
+        exit 1
+    fi
+}
+
+validate_num() {
+    if ! [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo -e "${RED}Error:${NC} $2 must be a number"
+        exit 1
+    fi
+}
+
 # ---- Commands ----
 
 cmd_init() {
@@ -116,8 +130,8 @@ cmd_search() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type_filter="AND m.type = '$2'"; shift 2 ;;
-            --min-confidence) confidence_filter="AND m.confidence >= $2"; shift 2 ;;
-            --limit) limit="$2"; shift 2 ;;
+            --min-confidence) validate_num "$2" "min-confidence"; confidence_filter="AND m.confidence >= $2"; shift 2 ;;
+            --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
             --agent) agent_filter="AND m.agent_id = '$2'"; shift 2 ;;
             *) shift ;;
         esac
@@ -145,7 +159,7 @@ cmd_store() {
             --type) type="$2"; shift 2 ;;
             --content) content="$2"; shift 2 ;;
             --source) source="$2"; shift 2 ;;
-            --confidence) confidence="$2"; shift 2 ;;
+            --confidence) validate_num "$2" "confidence"; confidence="$2"; shift 2 ;;
             --tags) tags="$2"; shift 2 ;;
             --agent) agent="$2"; shift 2 ;;
             *) shift ;;
@@ -174,6 +188,7 @@ cmd_store() {
 cmd_recall() {
     check_db
     local id="$1"
+    validate_int "$id" "memory ID"
 
     echo -e "${CYAN}=== Memory #${id} ===${NC}"
     sql_json "SELECT * FROM memories WHERE id = ${id};"
@@ -197,6 +212,8 @@ cmd_recall() {
 cmd_link() {
     check_db
     local source="$1" target="$2"; shift 2
+    validate_int "$source" "source ID"
+    validate_int "$target" "target ID"
     local relation="related"
 
     while [[ $# -gt 0 ]]; do
@@ -216,6 +233,7 @@ cmd_link() {
 cmd_forget() {
     check_db
     local id="$1"
+    validate_int "$id" "memory ID"
     local now
     now=$(now_epoch)
     sql "UPDATE memories SET is_active = 0, updated_at = ${now} WHERE id = ${id};"
@@ -225,6 +243,7 @@ cmd_forget() {
 cmd_supersede() {
     check_db
     local old_id="$1"; shift
+    validate_int "$old_id" "memory ID"
     local content="" type="" confidence="" tags=""
 
     while [[ $# -gt 0 ]]; do
@@ -302,9 +321,9 @@ cmd_task() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --add) action="add"; shift ;;
-            --done) action="done"; id="$2"; shift 2 ;;
-            --cancel) action="cancel"; id="$2"; shift 2 ;;
-            --progress) action="progress"; id="$2"; shift 2 ;;
+            --done) validate_int "$2" "task ID"; action="done"; id="$2"; shift 2 ;;
+            --cancel) validate_int "$2" "task ID"; action="cancel"; id="$2"; shift 2 ;;
+            --progress) validate_int "$2" "task ID"; action="progress"; id="$2"; shift 2 ;;
             --description) description="$2"; shift 2 ;;
             --priority) priority="$2"; shift 2 ;;
             --source) source="$2"; shift 2 ;;
@@ -383,6 +402,7 @@ cmd_ask() {
 cmd_answer() {
     check_db
     local id="$1" answer="$2"
+    validate_int "$id" "question ID"
     local now
     now=$(now_epoch)
     sql "UPDATE open_questions SET status = 'answered', answer = '${answer//\'/\'\'}', resolved_at = ${now} WHERE id = ${id};"
@@ -418,7 +438,7 @@ cmd_logs() {
         case "$1" in
             --date) date_filter="AND date = '$2'"; shift 2 ;;
             --search) search="$2"; shift 2 ;;
-            --limit) limit="$2"; shift 2 ;;
+            --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -492,9 +512,15 @@ cmd_state() {
 cmd_budget() {
     check_db
     local max_tokens="$1"
+    validate_int "$max_tokens" "max_tokens"
     local agent_filter=""
 
     [[ $# -gt 1 ]] && [[ "$2" == "--agent" ]] && agent_filter="AND agent_id = '$3'"
+
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${RED}Error:${NC} python3 required for budget command"
+        exit 1
+    fi
 
     sql_json "
         SELECT id, type, content, confidence, token_estimate,
@@ -506,15 +532,15 @@ cmd_budget() {
 import sys, json
 try:
     rows = json.load(sys.stdin)
-    budget = ${max_tokens}
+    budget = int(sys.argv[1])
     selected = [r for r in rows if r.get('cumulative_tokens', 0) <= budget]
     print(json.dumps(selected, indent=2))
     total = sum(r.get('token_estimate', 0) for r in selected)
     print(f'\n--- {len(selected)} memories, ~{total} tokens (budget: {budget})', file=sys.stderr)
-except:
-    # Fallback for non-JSON output
-    for line in sys.stdin: print(line, end='')
-" 2>&1
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+" "$max_tokens" 2>&1
 }
 
 cmd_stats() {

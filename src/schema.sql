@@ -58,11 +58,6 @@ CREATE INDEX idx_memories_agent ON memories(agent_id);
 CREATE INDEX idx_memories_confidence ON memories(confidence);
 
 -- Auto-calculate token_estimate on insert/update
-CREATE TRIGGER memories_token_estimate_insert BEFORE INSERT ON memories
-WHEN new.token_estimate IS NULL BEGIN
-    SELECT RAISE(IGNORE);
-END;
-
 CREATE TRIGGER memories_auto_token_insert AFTER INSERT ON memories
 WHEN new.token_estimate IS NULL BEGIN
     UPDATE memories SET token_estimate = length(new.content) / 4 WHERE id = new.id;
@@ -96,6 +91,13 @@ CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
     VALUES ('delete', old.id, old.content, old.type, old.tags);
     INSERT INTO memories_fts(rowid, content, type, tags)
     VALUES (new.id, new.content, new.type, new.tags);
+END;
+
+-- Auto-deactivate memory when superseded
+CREATE TRIGGER memories_auto_deactivate_superseded AFTER INSERT ON memories
+WHEN new.supersedes_id IS NOT NULL BEGIN
+    UPDATE memories SET is_active = 0, updated_at = new.created_at
+    WHERE id = new.supersedes_id AND is_active = 1;
 END;
 
 -- ============================================================

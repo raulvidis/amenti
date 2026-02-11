@@ -24,11 +24,10 @@ echo ""
 # extracted and promoted to permanent memories table (if not already there)
 echo "--- Step 1: Auto-promoting high-confidence reflection memories ---"
 PROMOTED=0
-while IFS='|' read -r ref_id memories_json; do
+while IFS=$'\t' read -r ref_id memories_json; do
     if [[ -n "$memories_json" && "$memories_json" != "null" ]]; then
-        # Parse JSON and insert memories
         echo "$memories_json" | python3 -c "
-import sys, json, subprocess, time
+import sys, json, time
 try:
     data = json.loads(sys.stdin.read())
     now = int(time.time())
@@ -37,17 +36,18 @@ try:
             content = m['content'].replace(\"'\", \"''\")
             mtype = m.get('type', 'fact')
             conf = m['confidence']
-            tags = m.get('tags', '')
+            tags = m.get('tags', '').replace(\"'\", \"''\")
             tokens = len(content) // 4
-            sql = f\"INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at) VALUES ('{mtype}', '{content}', 'auto-promoted from reflection', {conf}, '{tags}', {tokens}, 'default', {now}, {now});\"
+            sql = f\"INSERT OR IGNORE INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at) VALUES ('{mtype}', '{content}', 'auto-promoted from reflection', {conf}, '{tags}', {tokens}, 'default', {now}, {now});\"
             print(sql)
-except: pass
+except Exception as e:
+    print(f'Error processing reflection: {e}', file=sys.stderr)
 " | while read -r insert_sql; do
             sql "$insert_sql"
             PROMOTED=$((PROMOTED + 1))
         done
     fi
-done < <(sql "SELECT id, memories_extracted FROM reflections WHERE distilled = 0 AND date < date('now', '-30 days') AND memories_extracted IS NOT NULL AND memories_extracted != '';")
+done < <(sqlite3 -batch -separator $'\t' "$DB" "SELECT id, memories_extracted FROM reflections WHERE distilled = 0 AND date < date('now', '-30 days') AND memories_extracted IS NOT NULL AND memories_extracted != '';")
 echo "Promoted: $PROMOTED memories"
 
 # 2. Clean old daily logs (30 days, distilled only)

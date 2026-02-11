@@ -53,16 +53,14 @@ Total: ~500-700 tokens vs 6,000-45,000. That's **80-95% reduction**.
 ┌─────────────────────────────────────────────┐
 │              SQLite Database                 │
 │                                             │
-│  memories (+ FTS5)     ← permanent store    │
-│  daily_logs (+ FTS5)   ← raw, 7 days       │
-│  reflections           ← structured, 7 days │
-│  open_questions        ← follow-ups         │
-│  identity_evolution    ← agent changes      │
-│  agent_identity        ← core identity      │
-│  user_context          ← about the human    │
-│  agent_state           ← runtime state      │
-│  token_usage           ← consumption track  │
-│  model_switches        ← model history      │
+│  memories (+ FTS5)     ← permanent store     │
+│  memory_links          ← relationships       │
+│  daily_logs (+ FTS5)   ← raw, 30 days       │
+│  reflections           ← structured, 30 days │
+│  action_items          ← tasks               │
+│  open_questions        ← follow-ups          │
+│  agent_state           ← runtime state       │
+│  identity_evolution    ← agent changes       │
 └─────────────────────────────────────────────┘
 ```
 
@@ -71,15 +69,26 @@ Total: ~500-700 tokens vs 6,000-45,000. That's **80-95% reduction**.
 ```
 Session activity
     ↓
-daily_logs (raw observations, 7 days)
+daily_logs (raw observations, 30 days)
     ↓  [reflection cycle — 30min idle trigger]
-reflections (structured processing, 7 days)
+reflections (structured processing, 30 days)
     ↓  [distillation — daily hygiene]
 memories (permanent, FTS5-searchable)
     ↓
 open_questions (if confidence < 0.50)
 identity_evolution (if role/personality shifted)
 ```
+
+## Views
+
+6 views provide convenient access to common queries:
+
+- **`v_active_memories`** — Active memories sorted by confidence
+- **`v_session_context`** — High-confidence (>=0.80) memories for session boot
+- **`v_open_actions`** — Open action items sorted by priority
+- **`v_pending_distillation`** — Reflections not yet distilled
+- **`v_context_budget`** — Memories with running cumulative token total
+- **`v_memory_graph`** — Linked active memories with relation types
 
 ## FTS5: Why Not Vector Embeddings?
 
