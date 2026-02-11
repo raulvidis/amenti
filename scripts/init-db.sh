@@ -1,36 +1,36 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
-# Amenti — Initialize Memory Database
+# Amenti — Initialize Database
 # ============================================================
-# Usage: ./scripts/init-db.sh [path/to/database.db]
-# Default: ./amenti.db
 
 set -euo pipefail
 
-DB_PATH="${1:-./amenti.db}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCHEMA_PATH="$SCRIPT_DIR/../src/schema.sql"
+DB="${AMENTI_DB:-amenti.db}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCHEMA="$SCRIPT_DIR/../src/schema.sql"
 
-if [ -f "$DB_PATH" ]; then
-    echo "⚠️  Database already exists at $DB_PATH"
-    echo "    To recreate, delete it first: rm $DB_PATH"
+if [[ -f "$DB" ]]; then
+    echo "Database already exists at $DB"
+    read -p "Reinitialize? This will DELETE all data. (y/N) " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] || exit 0
+    cp "$DB" "${DB}.bak"
+    echo "Backup saved to ${DB}.bak"
+    rm "$DB"
+fi
+
+if [[ ! -f "$SCHEMA" ]]; then
+    echo "Error: schema.sql not found at $SCHEMA"
     exit 1
 fi
 
-if [ ! -f "$SCHEMA_PATH" ]; then
-    echo "❌ Schema not found at $SCHEMA_PATH"
-    exit 1
-fi
-
-echo "🏛️  Initializing Amenti database at $DB_PATH..."
-sqlite3 "$DB_PATH" < "$SCHEMA_PATH"
-
-echo "✅ Database created successfully!"
+sqlite3 "$DB" < "$SCHEMA"
+echo "✅ Database initialized at $DB"
 echo ""
-echo "Tables:"
-sqlite3 "$DB_PATH" ".tables"
+echo "Tables created:"
+sqlite3 "$DB" ".tables"
 echo ""
 echo "Next steps:"
-echo "  1. Copy templates/MEMORY.md to your agent workspace"
-echo "  2. Copy templates/SKILL.md to your agent skills folder"
-echo "  3. Set AMENTI_DB=$DB_PATH in your agent environment"
+echo "  1. Install CLI:  ln -s $(realpath "$SCRIPT_DIR/../bin/amenti") /usr/local/bin/amenti"
+echo "  2. Set DB path:  export AMENTI_DB=$DB"
+echo "  3. Run migrate:  AMENTI_DB=$DB $SCRIPT_DIR/migrate.sh /path/to/workspace"

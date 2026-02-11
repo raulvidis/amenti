@@ -7,123 +7,93 @@ Amenti replaces bloated context files with a SQLite-backed memory system using F
 ## How It Works
 
 **Traditional:** Load 8,000+ tokens of context every session
-**Amenti:** Load ~500 tokens (tasks only) + FTS5 search on demand
+**Amenti:** Load ~500 tokens (tasks only) + search on demand
 
-**The pipeline:**
 ```
-Session activity → daily_logs (30 days) → reflections (30 days) → memories (permanent)
-               ↓
-           memory.md (tasks only)
+Session activity → daily_logs (30 days) → reflections → memories (permanent)
+                                                      → action_items (tasks)
+                                                      → open_questions
+                                                      → identity_evolution
 ```
-
-**memory.md becomes a task list:**
-```markdown
-# MEMORY.md
-
-## Active Tasks
-- [ ] Fix deployment pipeline
-- [ ] Research pricing tiers
-```
-
-Everything else lives in SQLite, searchable via FTS5.
 
 ## Features
 
-- **FTS5 full-text search** — fast semantic search across all memories, zero maintenance
+- **FTS5 full-text search** — fast keyword search across all memories, zero maintenance
+- **CLI abstraction** — `amenti search`, `amenti store`, `amenti budget` — no raw SQL
+- **Memory linking** — memories form a graph (supports, contradicts, depends_on, related)
+- **Context budget** — "give me top memories that fit in N tokens"
 - **Confidence scoring** — every memory scored 0.0–1.0, no confabulation
-- **Memory types** — fact, preference, relationship, principle, commitment, moment, skill, pattern
-- **Reflection cycle** — automatic distillation from raw logs to permanent memories
-- **Action-driven reflections** — reflections produce action items, not just questions
-- **Token efficient** — 80-90% reduction in context tokens vs file-based memory
-- **Supersede, don't overwrite** — full memory history preserved
-- **30-day retention** — daily_logs and reflections expire after 30 days
-- **Agent state tracking** — heartbeat counts, reflection timers, proactive check-ins
-- **Identity evolution** — track how the agent changes over time
+- **Smart retention** — high-confidence data auto-promotes before 30-day cleanup
+- **Multi-agent** — agents share a DB, scoped by agent_id
+- **Action-driven reflections** — reflections produce tasks, not just summaries
+- **Token efficient** — 80-90% reduction vs file-based memory
 
 ## Schema
 
-7 tables total:
+8 tables:
 
 | Table | Purpose |
 |-------|---------|
-| `memories` | Permanent knowledge (FTS5 searchable) |
-| `daily_logs` | Raw session notes (30 days, FTS5 searchable) |
+| `memories` | Permanent knowledge (FTS5, linked, tagged, token-estimated) |
+| `memory_links` | Relationships between memories (graph) |
+| `daily_logs` | Raw session notes (30 days, FTS5) |
 | `reflections` | Structured processing |
 | `action_items` | Tasks born from reflections or sessions |
 | `open_questions` | Things to follow up on |
 | `agent_state` | Runtime state (heartbeat, counters) |
 | `identity_evolution` | How the agent changes over time |
 
-**Files (NOT in DB):**
-- `SOUL.md` / `IDENTITY.md` — core identity, loaded every session
-- `USER.md` — about the human, loaded every session
-- `MEMORY.md` — active tasks only (tiny scratchpad)
-
 ## Installation
 
 ```bash
-# Initialize the database
+# 1. Initialize the database
 ./scripts/init-db.sh
 
-# Copy memory template
-cp templates/MEMORY.md /path/to/agent/workspace/MEMORY.md
+# 2. Install the CLI
+ln -s $(pwd)/bin/amenti /usr/local/bin/amenti
+export AMENTI_DB=/path/to/amenti.db
 
-# Install the skill file
-cp templates/SKILL.md /path/to/agent/workspace/skills/amenti/SKILL.md
+# 3. Migrate existing file-based memory
+./scripts/migrate.sh /path/to/agent/workspace
+
+# 4. Copy templates to agent workspace
+cp templates/MEMORY.md /path/to/workspace/MEMORY.md
+cp templates/SKILL.md /path/to/workspace/skills/amenti/SKILL.md
 ```
 
-## Project Structure
+## CLI
 
-```
-amenti/
-├── README.md
-├── LICENSE
-├── src/
-│   └── schema.sql          # SQLite schema (7 tables, FTS5, triggers, views)
-├── templates/
-│   ├── MEMORY.md            # Lean memory.md template (tasks only)
-│   └── SKILL.md             # Agent skill file (how to use Amenti)
-├── scripts/
-│   ├── init-db.sh           # Initialize database
-│   ├── migrate.sh           # Migrate from file-based memory
-│   └── cleanup.sh           # Manual cleanup script
-├── docs/
-│   └── ARCHITECTURE.md      # Design decisions and rationale
-└── tests/
-    └── test-queries.sql     # Example queries for testing
-```
+```bash
+# Search
+amenti search "deployment issues" --type fact --min-confidence 0.8
 
-## Quick Start
+# Store (with tags for better FTS5 hits)
+amenti store --type fact --content "User loves sim racing" --confidence 0.95 --tags "hobby,racing,iracing"
 
-```sql
--- Search memories
-SELECT m.id, m.type, m.content, m.confidence
-FROM memories_fts f
-JOIN memories m ON f.rowid = m.id
-WHERE memories_fts MATCH 'search terms'
-ORDER BY f.rank LIMIT 5;
+# Link memories
+amenti link 5 12 --relation supports
 
--- Store a memory
-INSERT INTO memories (type, content, source, confidence, created_at, updated_at)
-VALUES ('fact', 'User works remote on Fridays', 'direct statement', 0.95,
- strftime('%s','now'), strftime('%s','now'));
+# Recall with linked context
+amenti recall 5
 
--- Create an action item
-INSERT INTO action_items (description, source, priority, status, created_at)
-VALUES ('Fix deployment pipeline', 'reflection', 'high', 'open',
- strftime('%s','now'));
+# Context budget — top memories within N tokens
+amenti budget 2000
 
--- Check open questions
-SELECT question, context FROM open_questions WHERE status = 'open';
+# Action items
+amenti task --add --description "Fix pipeline" --priority high
+amenti tasks --status open
+amenti task --done 3
 
--- Update agent state (heartbeat)
-INSERT OR REPLACE INTO agent_state (key, value, updated_at)
-VALUES ('heartbeat_count', '100', strftime('%s','now'));
+# Daily logs
+amenti log "Fixed Docker restart policy issue" --category task
+amenti logs --search "docker"
 
--- Add identity shift
-INSERT INTO identity_evolution (date, shift, trigger, created_at)
-VALUES ('2026-02-11', 'Agent is becoming more proactive', 'Substantial session',
- strftime('%s','now'));
+# Stats
+amenti stats
+
+# Multi-agent
+AMENTI_AGENT=nova amenti search "calendar"
+AMENTI_AGENT=cleo amenti store --type fact --content "..."
 ```
 
 ## Memory Types
@@ -148,52 +118,61 @@ VALUES ('2026-02-11', 'Agent is becoming more proactive', 'Substantial session',
 | 0.50–0.79 | Inferred | Store, mark for validation |
 | < 0.50 | Weak inference | Store as question, not memory |
 
-## Action Items
+## Smart Retention
 
-Action items are born from reflections or user requests. They live in the `action_items` table:
+Not all data is equal. Before 30-day cleanup:
 
-| Status | Meaning |
-|--------|---------|
-| `open` | Not started |
-| `in_progress` | Currently working on |
-| `done` | Completed |
-| `cancelled` | Abandoned |
+1. High-confidence memories (≥0.80) from reflections are **auto-promoted** to permanent
+2. Distilled daily logs and reflections are deleted
+3. Stale questions (30d) are marked stale
+4. Abandoned action items (60d) are cancelled
+5. Orphaned memory links are cleaned
 
-**Priority levels:** low, normal, high, urgent
+## Memory Linking
 
-## Reflections
+Memories aren't flat — they form a graph:
 
-Reflections are NOT just summaries. They produce:
+```bash
+amenti link 5 12 --relation supports    # "quit corporate" supports "revenue target"
+amenti link 8 3 --relation depends_on   # "V2 plan" depends on "server migration"
+amenti recall 5                         # Shows memory #5 + all linked memories
+```
 
-1. **Memories** → INSERT INTO memories table
-2. **Action items** → INSERT INTO action_items table
-3. **Questions** → INSERT INTO open_questions table
-4. **Identity shifts** → INSERT INTO identity_evolution table
+Relations: `supports`, `contradicts`, `depends_on`, `related`, `supersedes`
 
-**Rule:** A reflection without action items is a wasted reflection.
+## Multi-Agent
 
-## Cleanup
+Multiple agents can share one database:
 
-Automatic cleanup runs daily:
+```bash
+export AMENTI_AGENT=nova     # All operations scoped to Nova
+amenti store --type fact --content "..."
 
-```sql
--- Remove old daily_logs
-DELETE FROM daily_logs WHERE distilled = 1
-  AND date < date('now', '-30 days');
+export AMENTI_AGENT=cleo     # Switch to Cleo
+amenti search "calendar events" --agent nova  # Search Nova's memories from Cleo
+```
 
--- Remove old reflections
-DELETE FROM reflections WHERE distilled = 1
-  AND date < date('now', '-30 days');
+## Project Structure
 
--- Stale questions become cancelled
-UPDATE open_questions SET status = 'stale'
-  WHERE status = 'open'
-  AND created_at < strftime('%s','now','-30 days');
-
--- Old action items become cancelled
-UPDATE action_items SET status = 'cancelled'
-  WHERE status = 'open'
-  AND created_at < strftime('%s','now','-60 days');
+```
+amenti/
+├── README.md
+├── LICENSE
+├── bin/
+│   └── amenti               # CLI tool
+├── src/
+│   └── schema.sql           # SQLite schema (8 tables, FTS5, triggers, views)
+├── templates/
+│   ├── MEMORY.md            # Lean memory.md template (tasks only)
+│   └── SKILL.md             # Agent skill file (how to use Amenti)
+├── scripts/
+│   ├── init-db.sh           # Initialize database
+│   ├── migrate.sh           # Migrate from file-based memory
+│   └── cleanup.sh           # Smart cleanup with auto-promotion
+├── docs/
+│   └── ARCHITECTURE.md      # Design decisions and rationale
+└── tests/
+    └── test-queries.sql     # Test queries
 ```
 
 ## License
@@ -202,4 +181,4 @@ MIT
 
 ---
 
-**Built for AI agents that need more memory with fewer tokens.** 🏛️
+**Built for AI agents that remember.** 🏛️
