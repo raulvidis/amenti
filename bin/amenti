@@ -125,7 +125,7 @@ cmd_init() {
 cmd_search() {
     check_db
     local query="$1"; shift
-    local type_filter="" confidence_filter="" limit="10" agent_filter=""
+    local type_filter="" confidence_filter="" limit="10" agent_filter="" search_logs=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -133,21 +133,94 @@ cmd_search() {
             --min-confidence) validate_num "$2" "min-confidence"; confidence_filter="AND m.confidence >= $2"; shift 2 ;;
             --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
             --agent) agent_filter="AND m.agent_id = '$2'"; shift 2 ;;
+            --logs) search_logs="1"; shift ;;
             *) shift ;;
         esac
     done
 
-    sql_json "
+    # Multi-strategy search:
+    # 1. FTS5 full-text match on memories
+    # 2. LIKE fallback on content + tags for partial matches
+    # 3. Optionally search daily_logs too
+    # Results are deduplicated and merged
+
+    local results
+    results=$(python3 -c "
+import sqlite3, json, sys
+
+db = sqlite3.connect('${DB}')
+db.row_factory = sqlite3.Row
+query = '''${query//\'/\'\'}'''
+limit = ${limit}
+seen = set()
+results = []
+
+# Strategy 1: FTS5 match on memories
+try:
+    for row in db.execute('''
         SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
-               m.token_estimate, m.created_at, m.updated_at
-        FROM memories_fts f
-        JOIN memories m ON f.rowid = m.id
-        WHERE memories_fts MATCH '${query}'
-        AND m.is_active = 1
-        ${type_filter} ${confidence_filter} ${agent_filter}
-        ORDER BY f.rank
-        LIMIT ${limit};
-    "
+               m.token_estimate, m.created_at, m.updated_at, 'fts5' as match_type
+        FROM memories_fts f JOIN memories m ON f.rowid = m.id
+        WHERE memories_fts MATCH ? AND m.is_active = 1
+        ORDER BY f.rank LIMIT ?
+    ''', (query, limit)):
+        if row['id'] not in seen:
+            seen.add(row['id'])
+            results.append(dict(row))
+except:
+    pass
+
+# Strategy 2: LIKE fallback — split query into words, match any
+words = query.split()
+like_clauses = ' OR '.join([f\"m.content LIKE '%{w}%' OR m.tags LIKE '%{w}%'\" for w in words])
+if like_clauses:
+    try:
+        for row in db.execute(f'''
+            SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
+                   m.token_estimate, m.created_at, m.updated_at, 'like' as match_type
+            FROM memories m
+            WHERE m.is_active = 1 AND ({like_clauses})
+            ORDER BY m.confidence DESC LIMIT ?
+        ''', (limit,)):
+            if row['id'] not in seen:
+                seen.add(row['id'])
+                results.append(dict(row))
+    except:
+        pass
+
+# Strategy 3: Search daily_logs if --logs or no memory results
+if '${search_logs}' == '1' or len(results) == 0:
+    try:
+        for row in db.execute('''
+            SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
+                   dl.agent_id, 'daily_log' as match_type
+            FROM daily_logs_fts f JOIN daily_logs dl ON f.rowid = dl.id
+            WHERE daily_logs_fts MATCH ?
+            ORDER BY f.rank LIMIT ?
+        ''', (query, 3)):
+            results.append(dict(row))
+    except:
+        pass
+    # LIKE fallback on daily_logs too
+    if len(results) == 0:
+        like_dl = ' OR '.join([f\"dl.content LIKE '%{w}%'\" for w in words])
+        if like_dl:
+            try:
+                for row in db.execute(f'''
+                    SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
+                           dl.agent_id, 'daily_log_like' as match_type
+                    FROM daily_logs dl WHERE {like_dl}
+                    ORDER BY dl.date DESC LIMIT 3
+                '''):
+                    results.append(dict(row))
+            except:
+                pass
+
+print(json.dumps(results[:limit], indent=2, default=str))
+db.close()
+" 2>&1)
+
+    echo "$results"
 }
 
 cmd_store() {

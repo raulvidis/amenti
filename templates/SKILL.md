@@ -1,187 +1,148 @@
-# Memory Management Skill — Amenti 🏛️
+# Amenti — Persistent Memory Skill 🏛️
 
-## ⚠️ MANDATORY: DATABASE FIRST — NO EXCEPTIONS
-
-**BEFORE you use web search, BEFORE you rely on training data, BEFORE you answer from general knowledge — SEARCH YOUR DATABASE.**
-
-Your memory lives in TWO places:
-1. `MEMORY.md` — ONLY active unresolved tasks (tiny file)
-2. `amenti.db` — EVERYTHING else (facts, preferences, skills, patterns, relationships)
-
-## The Golden Rule
-
-1. User asks something → **SEARCH THE DATABASE FIRST**
-2. Database has the answer → **USE IT. Do NOT search the web.**
-3. Database has NO answer → THEN and ONLY THEN use web search or training data
-4. You learn something new → **STORE IT in the database**
-
-## CLI Commands
-
-Use the `amenti` CLI for all database operations. Never write raw SQL.
-
-### Searching
+## Setup (run once)
 
 ```bash
-# Search memories (FTS5 full-text search)
-amenti search "deployment issues"
-amenti search "Docker" --type skill --min-confidence 0.8 --limit 5
+# 1. Set environment (add to your shell profile)
+export AMENTI_DB=$HOME/.openclaw/workspace/amenti.db
+export AMENTI_AGENT=your_agent_name
 
-# Search daily logs
-amenti logs --search "debugging session"
-amenti logs --date 2026-02-11
+# 2. Init the database
+cd /path/to/amenti && bash scripts/init-db.sh
+
+# 3. Install CLI on PATH
+sudo ln -sf /path/to/amenti/bin/amenti /usr/local/bin/amenti
+
+# 4. Migrate existing memory files
+bash scripts/migrate.sh /path/to/your/workspace
+
+# 5. Verify
+amenti stats
 ```
 
-**Search tips:** FTS5 matches keywords, not meaning. If "work frustrations" finds nothing, try "corporate" or "job" or "hate work". Try multiple search terms.
+After migration, **trim MEMORY.md to tasks only** — all knowledge now lives in the database.
 
-### Storing Memories
+---
 
+## How Memory Works
+
+Your knowledge is in SQLite, not files. Files are for active tasks only.
+
+| What | Where |
+|------|-------|
+| Facts, lessons, patterns | `amenti.db` (search with `amenti search`) |
+| Active tasks/todos | `MEMORY.md` (loaded in context) |
+| Daily activity | `amenti log` (not files) |
+| Reflections | `amenti reflect` (not files) |
+
+---
+
+## Answering Questions — THE PROTOCOL
+
+When someone asks you something:
+
+1. **Search your database FIRST.** Always.
+   ```bash
+   amenti search "relevant keywords"
+   ```
+
+2. **If no results, try 2-3 different keyword searches.** FTS5 is keyword-based.
+   - Try synonyms: "work frustrations" → "corporate hate"
+   - Try shorter terms: "Docker restart policy" → "Docker restart"
+   - Try the key noun: "girlfriend" or "iRacing"
+
+3. **If the database returns results → answer from them.** That's your memory. Trust it.
+
+4. **If nothing found after 3 searches → say "I don't have that in my memory."**
+   Do NOT search the web. Do NOT guess. Just say you don't know.
+
+5. **NEVER use web_search or web_fetch to answer memory questions.**
+   Your database IS your memory. The web is not.
+
+---
+
+## CLI Reference
+
+### Search (most important command)
 ```bash
-amenti store --type fact --content "User works at esports company" --confidence 0.95 --tags "work,job,esports"
-amenti store --type preference --content "Hates corporate fluff" --confidence 0.90 --tags "work,communication,directness"
-amenti store --type skill --content "Docker MaximumRetryCount only works with on-failure" --confidence 0.95 --tags "docker,restart,config"
+amenti search "keywords"                           # search memories + daily logs
+amenti search "keywords" --type fact               # filter by type
+amenti search "keywords" --min-confidence 0.8      # high confidence only
+amenti search "keywords" --limit 5                 # limit results
+amenti search "keywords" --logs                    # force include daily logs
 ```
 
-**ALWAYS include tags.** Tags are comma-separated keywords that help FTS5 find memories even when search terms don't match the content exactly. Include synonyms and related words.
-
-**Memory types:** fact, preference, relationship, principle, commitment, moment, skill, pattern
-
-**Confidence scoring:**
-- 0.95-1.0 = directly stated by user
-- 0.80-0.94 = strongly implied
-- 0.50-0.79 = inferred (mark for validation)
-- < 0.50 = store as question, NOT memory
-
-### Linking Memories
-
+### Store
 ```bash
-# Link related memories
-amenti link 5 12 --relation supports
-amenti link 8 3 --relation related
-
-# Recall a memory with its links
-amenti recall 5
+amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,synonym1,keyword2"
 ```
 
-**Relations:** supports, contradicts, depends_on, related, supersedes
+**Tags are CRITICAL.** Include:
+- The main keywords from the content
+- Synonyms someone might search for
+- Related concepts
+- Names, places, numbers
 
-### Updating Memories
-
+Example: For "Raul sleeps 10-11 PM to 6:50 AM":
 ```bash
-# Replace a memory (preserves history)
-amenti supersede 5 --content "Updated information about X"
-
-# Deactivate a memory
-amenti forget 12
+amenti store --type fact --content "Raul sleeps 10-11 PM to 6:50 AM Bucharest time" \
+  --confidence 0.95 \
+  --tags "sleep,bedtime,schedule,night,morning,routine,time,10pm,11pm,650am,wake"
 ```
 
-### Action Items
-
-```bash
-# Add a task
-amenti task --add --description "Fix deployment pipeline" --priority high --source user_request
-
-# List open tasks
-amenti tasks --status open --priority high
-
-# Complete or cancel
-amenti task --done 3
-amenti task --cancel 5
-```
-
-### Questions
-
-```bash
-# Ask a question (low-confidence observations)
-amenti ask "Does user prefer morning or evening coding?" --context "Noticed more commits after 8pm"
-
-# Answer a question
-amenti answer 2 "Confirmed: prefers evening coding sessions"
-
-# List open questions
-amenti questions
-```
+**Types:** fact, preference, relationship, principle, commitment, moment, skill, pattern
+**Confidence:** 0.95+ direct statement, 0.80-0.94 implied, 0.50-0.79 inferred
 
 ### Daily Logs
-
 ```bash
-# Log something
-amenti log "Discussed deployment strategy with user" --category decision
-
-# Browse logs
+amenti log "Discussed deployment strategy" --category decision
 amenti logs --date 2026-02-11
 amenti logs --search "deployment"
 ```
 
-### Reflections
-
+### Tasks
 ```bash
-amenti reflect "Productive session: fixed Docker issues, learned about user preferences" \
-  --memories '[{"type":"skill","content":"Docker needs on-failure","confidence":0.95}]' \
-  --questions '["What other Docker issues might come up?"]'
+amenti task --add --description "Fix pipeline" --priority high
+amenti tasks                    # open tasks
+amenti task --done 3            # complete task
 ```
 
-### Context Budget
-
+### Questions
 ```bash
-# Get top memories that fit within N tokens
-amenti budget 2000
+amenti ask "Does user prefer morning coding?" --context "Observed pattern"
+amenti questions                # list open questions
+amenti answer 2 "Confirmed"    # answer a question
 ```
 
-### Agent State
-
+### Other Commands
 ```bash
-# Get all state
-amenti state
-
-# Get/set specific key
-amenti state heartbeat_count
-amenti state heartbeat_count 276
+amenti recall 5                # get memory #5 with links
+amenti link 5 12 --relation supports
+amenti supersede 5 --content "Updated info"
+amenti forget 12               # deactivate
+amenti budget 2000             # top memories within token limit
+amenti stats                   # database stats
+amenti export                  # export all
+amenti state                   # agent state key-values
+amenti identity "Shift" --trigger "Why"
+amenti reflect "Summary" --memories '[...]' --questions '[...]'
 ```
-
-### Stats
-
-```bash
-amenti stats
-```
-
-### Identity Evolution
-
-```bash
-amenti identity "Becoming more proactive about reaching out" --trigger "User feedback on check-ins"
-```
-
-### Export
-
-```bash
-# Export all memories as JSON
-amenti export
-amenti export --type skill
-```
-
-## Multi-Agent
-
-Set `AMENTI_AGENT` to scope all operations to a specific agent:
-
-```bash
-export AMENTI_AGENT=nova
-amenti search "deployment"  # Only searches Nova's memories
-
-export AMENTI_AGENT=cleo
-amenti store --type fact --content "..."  # Stored as Cleo's memory
-```
-
-Agents can share the same database and search each other's memories by passing `--agent`:
-
-```bash
-amenti search "calendar" --agent cleo
-```
-
-## Task Management
-
-- New task → add to MEMORY.md: `- [ ] description` AND `amenti task --add`
-- Task done → remove from MEMORY.md AND `amenti task --done <id>`
-- Everything else → goes in amenti.db via CLI
 
 ---
 
-**Your memories are your friendship with your human. Treat them like gold.** 🏛️
+## Multi-Agent
+```bash
+export AMENTI_AGENT=nova
+amenti search "calendar" --agent cleo
+```
+
+---
+
+## Maintenance
+```bash
+/path/to/amenti/scripts/cleanup.sh
+```
+
+---
+
+**Your memories are your identity. Search before you speak.** 🏛️

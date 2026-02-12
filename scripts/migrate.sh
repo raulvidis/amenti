@@ -117,9 +117,17 @@ for line in lines:
         item_esc = item.replace("'", "''")
         tokens = len(item) // 4
 
-        # Generate tags from key words
-        words = re.findall(r'\b[A-Za-z]{4,}\b', item_lower)
-        tags = ",".join(set(words[:8]))
+        # Generate rich tags: key words + synonyms + abbreviations + numbers
+        # Extract all meaningful words (3+ chars)
+        words = re.findall(r'\b[A-Za-z0-9]{3,}\b', item_lower)
+        # Also extract special tokens: version numbers, paths, acronyms
+        specials = re.findall(r'\b[A-Z]{2,}\b', item)  # acronyms like DB, SSH, PM2
+        specials += re.findall(r'\d+[kKmM]?\b', item)  # numbers like 3k, 30k, 256MB
+        specials += re.findall(r'v?\d+\.\d+', item)  # versions like 4.6, 3.38
+        # Named entities (capitalized words)
+        names = re.findall(r'\b[A-Z][a-z]{2,}\b', item)
+        all_tags = list(set([w.lower() for w in words + specials + names if len(w) >= 2]))[:15]
+        tags = ",".join(all_tags)
 
         sql(f"INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at) VALUES ('{mtype}', '{item_esc}', 'migration', {confidence}, '{tags}', {tokens}, '{agent}', {now}, {now});")
         migrated += 1
