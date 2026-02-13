@@ -21,11 +21,24 @@ Memory grows, tokens grow, costs grow. And most of that context isn't relevant t
 ## The Solution
 
 ```
-Every session: MEMORY.md (tasks only, ~200 tokens) + FTS5 search (0 tokens until needed)
+Every session: MEMORY.md (tasks + memory index, ~500 tokens) + FTS5 search (0 tokens until needed)
 Per message:   ~200-500 tokens of relevant memories retrieved on demand
 ```
 
-Total: ~500-700 tokens vs 6,000-45,000. That's **80-95% reduction**.
+Total: ~700-1,000 tokens vs 6,000-45,000. That's **80-95% reduction**.
+
+### Memory Index
+
+MEMORY.md contains a **Memory Index** table — a lightweight lookup of what's stored in the DB:
+
+```markdown
+| Brief Description | Tags |
+|---|---|
+| User's girlfriend in Japan | girlfriend, iri, japan, relationship |
+| Docker restart policy | docker, restart, on-failure, container |
+```
+
+This solves the "agent doesn't know what it doesn't know" problem. Without the index, the agent has no way of knowing which topics exist in the DB and would either over-search (wasteful) or miss relevant memories (dangerous). The index costs ~100-300 tokens but eliminates blind searches entirely.
 
 ## Architecture
 
