@@ -46,7 +46,7 @@ This solves the "agent doesn't know what it doesn't know" problem. Without the i
 ┌─────────────────────────────────────────────┐
 │                Agent Session                 │
 │                                             │
-│  Boot: Load MEMORY.md (tasks only, ~200t)   │
+│  Boot: Load MEMORY.md (tasks + index, ~500t) │
 │                                             │
 │  On message:                                │
 │    1. Need context? → FTS5 search           │

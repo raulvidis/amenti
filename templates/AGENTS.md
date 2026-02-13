@@ -190,4 +190,50 @@ Each agent's memories are tagged with their ID. Cross-agent search is explicit.
 
 ---
 
+## Migrating a Bloated MEMORY.md to Amenti
+
+If your MEMORY.md has grown beyond ~3k tokens, follow these steps to distill it into the database.
+
+### Step 1: Run the migration script
+```bash
+bash /path/to/amenti/scripts/migrate.sh /path/to/your/workspace
+```
+This parses bullet points from MEMORY.md into memories, tasks, and questions.
+
+### Step 2: Review what was imported
+```bash
+amenti stats          # Check counts
+amenti export         # Review all imported memories
+```
+Fix any misclassified types or low-confidence entries.
+
+### Step 3: Build the Memory Index
+For every stored memory, add a row to the Memory Index table in MEMORY.md:
+```markdown
+| Brief Description | Tags |
+|---|---|
+| User's girlfriend in Japan | girlfriend, iri, japan, relationship |
+| Docker restart policy | docker, restart, on-failure, container |
+```
+This is how you'll know what's in the DB without searching.
+
+### Step 4: Trim MEMORY.md
+Remove everything except:
+- The Memory Index table
+- Active tasks (this week only)
+- Hot context (referenced daily)
+- Key people (names only, details in DB)
+
+Target: <3k tokens.
+
+### Migration Checklist
+- [ ] Run `migrate.sh` on your workspace
+- [ ] Verify with `amenti stats` — memories, tasks, questions all imported
+- [ ] Build Memory Index table with a row per stored memory
+- [ ] Trim MEMORY.md to index + active tasks + hot context
+- [ ] Verify MEMORY.md is under 3k tokens
+- [ ] Test: ask yourself a question, find it via index → search → answer
+
+---
+
 *Your files are your working memory. Your database is your long-term memory. Keep them separate.*

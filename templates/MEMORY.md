@@ -7,7 +7,27 @@
 
 ## Memory Index
 
-*What's in your DB. Scan this BEFORE searching — use these tags for accurate retrieval.*
+**This is your most important section.** It tells you what's in your DB without searching.
+
+*Scan this table BEFORE searching — use these tags for accurate retrieval.*
+
+### How to use
+
+1. **Scan the table** for rows matching the user's topic
+2. **Copy the tags** from matching rows into your search query
+3. **Run `amenti search "tags"`** to retrieve the full memory
+
+### Tag Search Examples
+
+> User asks: "What's my girlfriend's name?"
+> You scan the index, find: `girlfriend, iri, japan, nagoya, relationship`
+> You run: `amenti search "girlfriend iri"`
+> DB returns the full memory with all details.
+
+> User asks: "How should I configure Docker restart?"
+> You scan the index, find: `docker, restart, policy, container`
+> You run: `amenti search "docker restart policy"`
+> DB returns the technical details.
 
 | Brief Description | Tags |
 |---|---|

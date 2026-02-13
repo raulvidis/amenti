@@ -145,4 +145,34 @@ amenti search "calendar" --agent cleo
 
 ---
 
+## Adding Amenti to Your Agent Configuration
+
+To teach a new agent to use Amenti, add the following to your agent's configuration file (e.g., `CLAUDE.md`, `.cursorrules`, `agent.md`, or equivalent). Adjust paths and agent name to match your environment.
+
+```markdown
+## Memory System — Amenti
+
+This agent uses Amenti for persistent memory. MEMORY.md is the scratchpad (loaded every call). The database is the long-term brain.
+
+### Search Protocol
+1. Check MEMORY.md first (zero cost — already loaded)
+2. Scan the Memory Index table for matching tags
+3. Run `amenti search "tags from index"` (1-3 searches max per topic)
+4. If nothing found → say "I don't have that in my memory"
+5. NEVER guess or confabulate — trust your DB or admit you don't know
+
+### Store Protocol
+When the user tells you something worth keeping:
+1. `amenti store --type TYPE --content "..." --confidence X --tags "keyword1,synonym1,..."`
+2. Add a row to the Memory Index in MEMORY.md
+3. Types: fact, preference, relationship, principle, commitment, moment, skill, pattern
+
+### MEMORY.md Rules
+- Keep under 3k tokens
+- Only active tasks, Memory Index, and hot context
+- Completed tasks → `amenti log` → remove from file
+- Lessons learned → `amenti store` → remove from file
+- Update Memory Index every time you store or forget
+```
+
 **Your memories are your identity. Search before you speak.** 🏛️

@@ -23,72 +23,80 @@ echo ""
 # Reflections older than 30 days with confidence >= 0.80 get their memories
 # extracted and promoted to permanent memories table (if not already there)
 echo "--- Step 1: Auto-promoting high-confidence reflection memories ---"
-PROMOTED=0
-while IFS=$'\t' read -r ref_id memories_json; do
-    if [[ -n "$memories_json" && "$memories_json" != "null" ]]; then
-        echo "$memories_json" | python3 -c "
-import sys, json, time
-try:
-    data = json.loads(sys.stdin.read())
-    now = int(time.time())
-    for m in data:
-        if m.get('confidence', 0) >= 0.80:
-            content = m['content'].replace(\"'\", \"''\")
-            mtype = m.get('type', 'fact')
-            conf = m['confidence']
-            tags = m.get('tags', '').replace(\"'\", \"''\")
-            tokens = len(content) // 4
-            sql = f\"INSERT OR IGNORE INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at) VALUES ('{mtype}', '{content}', 'auto-promoted from reflection', {conf}, '{tags}', {tokens}, 'default', {now}, {now});\"
-            print(sql)
-except Exception as e:
-    print(f'Error processing reflection: {e}', file=sys.stderr)
-" | while read -r insert_sql; do
-            sql "$insert_sql"
-            PROMOTED=$((PROMOTED + 1))
-        done
-    fi
-done < <(sqlite3 -batch -separator $'\t' "$DB" "SELECT id, memories_extracted FROM reflections WHERE distilled = 0 AND date < date('now', '-30 days') AND memories_extracted IS NOT NULL AND memories_extracted != '';")
+PROMOTED=$(AMENTI_CLEANUP_DB="$DB" python3 -c "
+import sqlite3, json, time, os
+
+db_path = os.environ['AMENTI_CLEANUP_DB']
+db = sqlite3.connect(db_path)
+now = int(time.time())
+promoted = 0
+
+rows = db.execute(
+    \"\"\"SELECT id, memories_extracted FROM reflections
+       WHERE distilled = 0 AND date < date('now', '-30 days')
+       AND memories_extracted IS NOT NULL AND memories_extracted != ''\"\"\"
+).fetchall()
+
+for ref_id, memories_json in rows:
+    try:
+        data = json.loads(memories_json)
+        for m in data:
+            if m.get('confidence', 0) >= 0.80:
+                db.execute(
+                    '''INSERT OR IGNORE INTO memories
+                       (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
+                       VALUES (?, ?, 'auto-promoted from reflection', ?, ?, ?, 'default', ?, ?)''',
+                    (m.get('type', 'fact'), m['content'], m['confidence'],
+                     m.get('tags', ''), len(m['content']) // 4, now, now))
+                promoted += 1
+    except Exception as e:
+        print(f'Error processing reflection {ref_id}: {e}', __import__('sys').stderr)
+
+db.commit()
+db.close()
+print(promoted)
+" 2>&1)
 echo "Promoted: $PROMOTED memories"
 
-# 2. Clean old daily logs (30 days, distilled only)
+# Steps 2-7 wrapped in a single transaction for atomicity
 echo ""
-echo "--- Step 2: Cleaning daily logs older than 30 days ---"
+echo "--- Steps 2-7: Cleanup (transactional) ---"
+
 OLD_LOGS=$(sql "SELECT COUNT(*) FROM daily_logs WHERE distilled = 1 AND date < date('now', '-30 days');")
-sql "DELETE FROM daily_logs WHERE distilled = 1 AND date < date('now', '-30 days');"
-echo "Removed: $OLD_LOGS daily logs"
-
-# 3. Clean old reflections (30 days, distilled only)
-echo ""
-echo "--- Step 3: Cleaning reflections older than 30 days ---"
 OLD_REFS=$(sql "SELECT COUNT(*) FROM reflections WHERE distilled = 1 AND date < date('now', '-30 days');")
-sql "DELETE FROM reflections WHERE distilled = 1 AND date < date('now', '-30 days');"
-echo "Removed: $OLD_REFS reflections"
-
-# 4. Mark non-distilled old items as distilled (they've been promoted in step 1)
-echo ""
-echo "--- Step 4: Marking old undistilled items ---"
-sql "UPDATE reflections SET distilled = 1 WHERE distilled = 0 AND date < date('now', '-30 days');"
-sql "UPDATE daily_logs SET distilled = 1 WHERE distilled = 0 AND date < date('now', '-30 days');"
-
-# 5. Stale questions (30 days with no answer)
-echo ""
-echo "--- Step 5: Marking stale questions ---"
 STALE_Q=$(sql "SELECT COUNT(*) FROM open_questions WHERE status = 'open' AND created_at < strftime('%s','now','-30 days');")
-sql "UPDATE open_questions SET status = 'stale' WHERE status = 'open' AND created_at < strftime('%s','now','-30 days');"
-echo "Staled: $STALE_Q questions"
-
-# 6. Cancel abandoned action items (60 days)
-echo ""
-echo "--- Step 6: Cancelling abandoned action items ---"
 ABANDONED=$(sql "SELECT COUNT(*) FROM action_items WHERE status = 'open' AND created_at < strftime('%s','now','-60 days');")
-sql "UPDATE action_items SET status = 'cancelled' WHERE status = 'open' AND created_at < strftime('%s','now','-60 days');"
-echo "Cancelled: $ABANDONED action items"
-
-# 7. Clean orphaned memory links (pointing to deleted/inactive memories)
-echo ""
-echo "--- Step 7: Cleaning orphaned links ---"
 ORPHANED=$(sql "SELECT COUNT(*) FROM memory_links WHERE source_id NOT IN (SELECT id FROM memories) OR target_id NOT IN (SELECT id FROM memories);")
-sql "DELETE FROM memory_links WHERE source_id NOT IN (SELECT id FROM memories) OR target_id NOT IN (SELECT id FROM memories);"
+
+sql "
+BEGIN;
+
+-- Step 2: Clean old daily logs (30 days, distilled only)
+DELETE FROM daily_logs WHERE distilled = 1 AND date < date('now', '-30 days');
+
+-- Step 3: Clean old reflections (30 days, distilled only)
+DELETE FROM reflections WHERE distilled = 1 AND date < date('now', '-30 days');
+
+-- Step 4: Mark non-distilled old items as distilled (promoted in step 1)
+UPDATE reflections SET distilled = 1 WHERE distilled = 0 AND date < date('now', '-30 days');
+UPDATE daily_logs SET distilled = 1 WHERE distilled = 0 AND date < date('now', '-30 days');
+
+-- Step 5: Stale questions (30 days with no answer)
+UPDATE open_questions SET status = 'stale' WHERE status = 'open' AND created_at < strftime('%s','now','-30 days');
+
+-- Step 6: Cancel abandoned action items (60 days)
+UPDATE action_items SET status = 'cancelled' WHERE status = 'open' AND created_at < strftime('%s','now','-60 days');
+
+-- Step 7: Clean orphaned memory links
+DELETE FROM memory_links WHERE source_id NOT IN (SELECT id FROM memories) OR target_id NOT IN (SELECT id FROM memories);
+
+COMMIT;
+"
+
+echo "Removed: $OLD_LOGS daily logs"
+echo "Removed: $OLD_REFS reflections"
+echo "Staled: $STALE_Q questions"
+echo "Cancelled: $ABANDONED action items"
 echo "Removed: $ORPHANED orphaned links"
 
 # Summary

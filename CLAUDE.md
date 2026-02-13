@@ -4,24 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Amenti
 
-Amenti is a SQLite-backed persistent memory system for AI agents. It replaces large context files with FTS5 full-text search, so agents boot with a tiny task list (~200 tokens) and retrieve relevant memories on demand — 80-95% token reduction vs file-based memory.
+Amenti is a SQLite-backed persistent memory system for AI agents. It replaces large context files with FTS5 full-text search, so agents boot with a tiny task list (~500 tokens, <3k with Memory Index) and retrieve relevant memories on demand — 80-95% token reduction vs file-based memory.
 
 ## Tech Stack
 
-Pure Bash + SQLite. No package manager, no build system, no external dependencies.
+Pure Bash + SQLite. No package manager, no build system. Requires: SQLite3, Bash, Python3.
 
-- **CLI:** Single Bash script (`bin/amenti`, ~610 lines) using a command router pattern
+- **CLI:** Single Bash script (`bin/amenti`, ~740 lines) using a command router pattern
 - **Database:** SQLite3 with WAL mode, FTS5 full-text search (Porter stemming + Unicode61)
-- **Python3:** Used only in the `budget` command for JSON parsing
+- **Python3:** Used in `search` and `budget` commands for JSON parsing and parameterized queries
 
 ## Commands
 
 ```bash
 # Initialize database from schema
 ./scripts/init-db.sh
-
-# Run the test suite (20 SQL-based tests)
-sqlite3 amenti.db < tests/test-queries.sql
 
 # Run cleanup (smart retention, auto-promotion)
 ./scripts/cleanup.sh
@@ -72,7 +69,7 @@ Command router dispatches to `cmd_*()` functions. SQL executed via `sql()` (raw)
 
 ### Templates
 
-- `templates/MEMORY.md` — Minimal task-only scratchpad loaded each session (~200 tokens)
+- `templates/MEMORY.md` — Minimal task-only scratchpad loaded each session (~500 tokens minimal, <3k target)
 - `templates/SKILL.md` — Teaches agents when to search, what to store, how to maintain Amenti
 
 ## Memory Types

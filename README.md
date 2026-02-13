@@ -7,7 +7,9 @@ Amenti replaces bloated context files with a SQLite-backed memory system using F
 ## How It Works
 
 **Traditional:** Load 8,000+ tokens of context every session
-**Amenti:** Load ~500 tokens (tasks only) + search on demand
+**Amenti:** Load ~500 tokens (tasks + Memory Index) + search on demand
+
+**Requires:** SQLite3, Bash, Python3
 
 ```
 Session activity → daily_logs (30 days) → reflections → memories (permanent)
@@ -26,7 +28,7 @@ Session activity → daily_logs (30 days) → reflections → memories (permanen
 - **Smart retention** — high-confidence data auto-promotes before 30-day cleanup
 - **Multi-agent** — agents share a DB, scoped by agent_id
 - **Action-driven reflections** — reflections produce tasks, not just summaries
-- **Token efficient** — 80-90% reduction vs file-based memory
+- **Token efficient** — 80-95% reduction vs file-based memory
 
 ## Schema
 
@@ -169,10 +171,8 @@ amenti/
 │   ├── init-db.sh           # Initialize database
 │   ├── migrate.sh           # Migrate from file-based memory
 │   └── cleanup.sh           # Smart cleanup with auto-promotion
-├── docs/
-│   └── ARCHITECTURE.md      # Design decisions and rationale
-└── tests/
-    └── test-queries.sql     # Test queries
+└── docs/
+    └── ARCHITECTURE.md      # Design decisions and rationale
 ```
 
 ## License

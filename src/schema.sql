@@ -13,9 +13,7 @@
 --   identity_evolution  — how the agent changes over time
 --
 -- Files (NOT in DB):
---   SOUL.md / IDENTITY.md — core identity, loaded every session
---   USER.md — about the human, loaded every session
---   MEMORY.md — active tasks only (tiny scratchpad)
+--   MEMORY.md — active tasks + Memory Index (tiny scratchpad)
 --
 -- ============================================================
 

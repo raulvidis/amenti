@@ -78,6 +78,8 @@ token_est() {
     echo $(( ${#1} / 4 ))
 }
 
+esc() { printf '%s' "${1//\'/\'\'}"; }
+
 check_db() {
     if [[ ! -f "$DB" ]]; then
         echo -e "${RED}Error:${NC} Database not found at $DB"
@@ -129,10 +131,10 @@ cmd_search() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --type) type_filter="AND m.type = '$2'"; shift 2 ;;
-            --min-confidence) validate_num "$2" "min-confidence"; confidence_filter="AND m.confidence >= $2"; shift 2 ;;
+            --type) type_filter="$2"; shift 2 ;;
+            --min-confidence) validate_num "$2" "min-confidence"; confidence_filter="$2"; shift 2 ;;
             --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
-            --agent) agent_filter="AND m.agent_id = '$2'"; shift 2 ;;
+            --agent) agent_filter="$2"; shift 2 ;;
             --logs) search_logs="1"; shift ;;
             *) shift ;;
         esac
@@ -145,51 +147,83 @@ cmd_search() {
     # Results are deduplicated and merged
 
     local results
-    results=$(python3 -c "
-import sqlite3, json, sys
+    results=$(AMENTI_SEARCH_DB="$DB" \
+              AMENTI_SEARCH_QUERY="$query" \
+              AMENTI_SEARCH_LIMIT="$limit" \
+              AMENTI_SEARCH_LOGS="$search_logs" \
+              AMENTI_SEARCH_TYPE="$type_filter" \
+              AMENTI_SEARCH_CONFIDENCE="$confidence_filter" \
+              AMENTI_SEARCH_AGENT="$agent_filter" \
+              python3 -c "
+import sqlite3, json, sys, os
 
-db = sqlite3.connect('${DB}')
+db_path = os.environ['AMENTI_SEARCH_DB']
+query = os.environ['AMENTI_SEARCH_QUERY']
+limit = int(os.environ['AMENTI_SEARCH_LIMIT'])
+search_logs = os.environ.get('AMENTI_SEARCH_LOGS', '')
+type_filter = os.environ.get('AMENTI_SEARCH_TYPE', '')
+confidence_filter = os.environ.get('AMENTI_SEARCH_CONFIDENCE', '')
+agent_filter = os.environ.get('AMENTI_SEARCH_AGENT', '')
+
+db = sqlite3.connect(db_path)
 db.row_factory = sqlite3.Row
-query = '''${query//\'/\'\'}'''
-limit = ${limit}
 seen = set()
 results = []
 
+# Build optional WHERE clauses with parameterized queries
+extra_where = []
+extra_params = []
+if type_filter:
+    extra_where.append('AND m.type = ?')
+    extra_params.append(type_filter)
+if confidence_filter:
+    extra_where.append('AND m.confidence >= ?')
+    extra_params.append(float(confidence_filter))
+if agent_filter:
+    extra_where.append('AND m.agent_id = ?')
+    extra_params.append(agent_filter)
+extra_sql = ' '.join(extra_where)
+
 # Strategy 1: FTS5 match on memories
 try:
-    for row in db.execute('''
+    sql = f'''
         SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
                m.token_estimate, m.created_at, m.updated_at, 'fts5' as match_type
         FROM memories_fts f JOIN memories m ON f.rowid = m.id
-        WHERE memories_fts MATCH ? AND m.is_active = 1
+        WHERE memories_fts MATCH ? AND m.is_active = 1 {extra_sql}
         ORDER BY f.rank LIMIT ?
-    ''', (query, limit)):
+    '''
+    for row in db.execute(sql, [query] + extra_params + [limit]):
         if row['id'] not in seen:
             seen.add(row['id'])
             results.append(dict(row))
-except:
+except Exception:
     pass
 
 # Strategy 2: LIKE fallback — split query into words, match any
 words = query.split()
-like_clauses = ' OR '.join([f\"m.content LIKE '%{w}%' OR m.tags LIKE '%{w}%'\" for w in words])
-if like_clauses:
+if words:
+    like_clauses = ' OR '.join(['(m.content LIKE ? OR m.tags LIKE ?)'] * len(words))
+    like_params = []
+    for w in words:
+        like_params.extend([f'%{w}%', f'%{w}%'])
     try:
-        for row in db.execute(f'''
+        sql = f'''
             SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
                    m.token_estimate, m.created_at, m.updated_at, 'like' as match_type
             FROM memories m
-            WHERE m.is_active = 1 AND ({like_clauses})
+            WHERE m.is_active = 1 AND ({like_clauses}) {extra_sql}
             ORDER BY m.confidence DESC LIMIT ?
-        ''', (limit,)):
+        '''
+        for row in db.execute(sql, like_params + extra_params + [limit]):
             if row['id'] not in seen:
                 seen.add(row['id'])
                 results.append(dict(row))
-    except:
+    except Exception:
         pass
 
 # Strategy 3: Search daily_logs if --logs or no memory results
-if '${search_logs}' == '1' or len(results) == 0:
+if search_logs == '1' or len(results) == 0:
     try:
         for row in db.execute('''
             SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
@@ -199,22 +233,22 @@ if '${search_logs}' == '1' or len(results) == 0:
             ORDER BY f.rank LIMIT ?
         ''', (query, 3)):
             results.append(dict(row))
-    except:
+    except Exception:
         pass
     # LIKE fallback on daily_logs too
-    if len(results) == 0:
-        like_dl = ' OR '.join([f\"dl.content LIKE '%{w}%'\" for w in words])
-        if like_dl:
-            try:
-                for row in db.execute(f'''
-                    SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
-                           dl.agent_id, 'daily_log_like' as match_type
-                    FROM daily_logs dl WHERE {like_dl}
-                    ORDER BY dl.date DESC LIMIT 3
-                '''):
-                    results.append(dict(row))
-            except:
-                pass
+    if len(results) == 0 and words:
+        dl_clauses = ' OR '.join(['dl.content LIKE ?'] * len(words))
+        dl_params = [f'%{w}%' for w in words]
+        try:
+            for row in db.execute(f'''
+                SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
+                       dl.agent_id, 'daily_log_like' as match_type
+                FROM daily_logs dl WHERE {dl_clauses}
+                ORDER BY dl.date DESC LIMIT 3
+            ''', dl_params):
+                results.append(dict(row))
+        except Exception:
+            pass
 
 print(json.dumps(results[:limit], indent=2, default=str))
 db.close()
@@ -250,11 +284,10 @@ cmd_store() {
     local tokens
     tokens=$(token_est "$content")
 
-    sql "INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
-         VALUES ('${type}', '${content//\'/\'\'}', '${source}', ${confidence}, '${tags}', ${tokens}, '${agent}', ${now}, ${now});"
-
     local id
-    id=$(sql "SELECT last_insert_rowid();")
+    id=$(sql "INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
+         VALUES ('$(esc "$type")', '$(esc "$content")', '$(esc "$source")', ${confidence}, '$(esc "$tags")', ${tokens}, '$(esc "$agent")', ${now}, ${now});
+         SELECT last_insert_rowid();")
     echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
 }
 
@@ -299,7 +332,7 @@ cmd_link() {
     local now
     now=$(now_epoch)
     sql "INSERT INTO memory_links (source_id, target_id, relation, created_at)
-         VALUES (${source}, ${target}, '${relation}', ${now});"
+         VALUES (${source}, ${target}, '$(esc "$relation")', ${now});"
     echo -e "${GREEN}✅ Linked #${source} → #${target} (${relation})${NC}"
 }
 
@@ -347,19 +380,18 @@ cmd_supersede() {
     local tokens
     tokens=$(token_est "$content")
 
-    # Deactivate old
-    sql "UPDATE memories SET is_active = 0, updated_at = ${now} WHERE id = ${old_id};"
-
-    # Insert new with supersedes reference
-    sql "INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, supersedes_id, created_at, updated_at)
-         VALUES ('${type}', '${content//\'/\'\'}', 'superseded', ${confidence}, '${tags}', ${tokens}, '${AGENT_ID}', ${old_id}, ${now}, ${now});"
-
+    # Atomic: deactivate old, insert new, auto-link, return new ID
     local new_id
-    new_id=$(sql "SELECT last_insert_rowid();")
-
-    # Auto-link
-    sql "INSERT INTO memory_links (source_id, target_id, relation, created_at)
-         VALUES (${new_id}, ${old_id}, 'supersedes', ${now});"
+    new_id=$(sql "
+        BEGIN;
+        UPDATE memories SET is_active = 0, updated_at = ${now} WHERE id = ${old_id};
+        INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, supersedes_id, created_at, updated_at)
+            VALUES ('$(esc "$type")', '$(esc "$content")', 'superseded', ${confidence}, '$(esc "$tags")', ${tokens}, '$(esc "$AGENT_ID")', ${old_id}, ${now}, ${now});
+        INSERT INTO memory_links (source_id, target_id, relation, created_at)
+            VALUES ((SELECT MAX(id) FROM memories), ${old_id}, 'supersedes', ${now});
+        SELECT MAX(id) FROM memories;
+        COMMIT;
+    ")
 
     echo -e "${GREEN}✅ Memory #${old_id} superseded by #${new_id}${NC}"
 }
@@ -370,9 +402,9 @@ cmd_tasks() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --status) status_filter="AND status = '$2'"; shift 2 ;;
-            --priority) priority_filter="AND priority = '$2'"; shift 2 ;;
-            --agent) agent_filter="AND agent_id = '$2'"; shift 2 ;;
+            --status) status_filter="AND status = '$(esc "$2")'"; shift 2 ;;
+            --priority) priority_filter="AND priority = '$(esc "$2")'"; shift 2 ;;
+            --agent) agent_filter="AND agent_id = '$(esc "$2")'"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -414,7 +446,7 @@ cmd_task() {
                 echo -e "${RED}Error:${NC} --description required"; exit 1
             fi
             sql "INSERT INTO action_items (description, source, priority, status, due_date, agent_id, created_at)
-                 VALUES ('${description//\'/\'\'}', '${source}', '${priority}', 'open', $([ -n "$due_date" ] && echo "'$due_date'" || echo "NULL"), '${AGENT_ID}', ${now});"
+                 VALUES ('$(esc "$description")', '$(esc "$source")', '$(esc "$priority")', 'open', $([ -n "$due_date" ] && echo "'$(esc "$due_date")'" || echo "NULL"), '$(esc "$AGENT_ID")', ${now});"
             echo -e "${GREEN}✅ Task added${NC}"
             ;;
         done)
@@ -442,7 +474,7 @@ cmd_questions() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --status) status_filter="AND status = '$2'"; shift 2 ;;
+            --status) status_filter="AND status = '$(esc "$2")'"; shift 2 ;;
             --all) status_filter=""; shift ;;
             *) shift ;;
         esac
@@ -468,7 +500,7 @@ cmd_ask() {
     local now
     now=$(now_epoch)
     sql "INSERT INTO open_questions (question, context, status, agent_id, created_at)
-         VALUES ('${question//\'/\'\'}', '${context//\'/\'\'}', 'open', '${AGENT_ID}', ${now});"
+         VALUES ('$(esc "$question")', '$(esc "$context")', 'open', '$(esc "$AGENT_ID")', ${now});"
     echo -e "${GREEN}✅ Question stored${NC}"
 }
 
@@ -478,7 +510,7 @@ cmd_answer() {
     validate_int "$id" "question ID"
     local now
     now=$(now_epoch)
-    sql "UPDATE open_questions SET status = 'answered', answer = '${answer//\'/\'\'}', resolved_at = ${now} WHERE id = ${id};"
+    sql "UPDATE open_questions SET status = 'answered', answer = '$(esc "$answer")', resolved_at = ${now} WHERE id = ${id};"
     echo -e "${GREEN}✅ Question #${id} answered${NC}"
 }
 
@@ -499,7 +531,7 @@ cmd_log() {
     local today
     today=$(date +%Y-%m-%d)
     sql "INSERT INTO daily_logs (date, category, content, agent_id, created_at)
-         VALUES ('${today}', '${category}', '${content//\'/\'\'}', '${AGENT_ID}', ${now});"
+         VALUES ('${today}', '$(esc "$category")', '$(esc "$content")', '$(esc "$AGENT_ID")', ${now});"
     echo -e "${GREEN}✅ Logged${NC}"
 }
 
@@ -509,7 +541,7 @@ cmd_logs() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --date) date_filter="AND date = '$2'"; shift 2 ;;
+            --date) date_filter="AND date = '$(esc "$2")'"; shift 2 ;;
             --search) search="$2"; shift 2 ;;
             --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
             *) shift ;;
@@ -521,7 +553,7 @@ cmd_logs() {
             SELECT dl.id, dl.date, dl.category, dl.content, dl.agent_id
             FROM daily_logs_fts f
             JOIN daily_logs dl ON f.rowid = dl.id
-            WHERE daily_logs_fts MATCH '${search}'
+            WHERE daily_logs_fts MATCH '$(esc "$search")'
             ${date_filter}
             ORDER BY dl.date DESC, dl.created_at DESC
             LIMIT ${limit};
@@ -557,20 +589,20 @@ cmd_reflect() {
     today=$(date +%Y-%m-%d)
 
     sql "INSERT INTO reflections (date, summary, memories_extracted, questions_generated, identity_shifts, agent_id, created_at)
-         VALUES ('${today}', '${summary//\'/\'\'}', '${memories//\'/\'\'}', '${questions//\'/\'\'}', '${identity//\'/\'\'}', '${AGENT_ID}', ${now});"
+         VALUES ('${today}', '$(esc "$summary")', '$(esc "$memories")', '$(esc "$questions")', '$(esc "$identity")', '$(esc "$AGENT_ID")', ${now});"
     echo -e "${GREEN}✅ Reflection stored${NC}"
 }
 
 cmd_state() {
     check_db
     if [[ $# -eq 0 ]]; then
-        sql_json "SELECT key, value, updated_at FROM agent_state WHERE agent_id = '${AGENT_ID}' ORDER BY key;"
+        sql_json "SELECT key, value, updated_at FROM agent_state WHERE agent_id = '$(esc "$AGENT_ID")' ORDER BY key;"
         return
     fi
 
     local key="$1"
     if [[ $# -eq 1 ]]; then
-        sql "SELECT value FROM agent_state WHERE key = '${key}' AND agent_id = '${AGENT_ID}';"
+        sql "SELECT value FROM agent_state WHERE key = '$(esc "$key")' AND agent_id = '$(esc "$AGENT_ID")';"
         return
     fi
 
@@ -578,7 +610,7 @@ cmd_state() {
     local now
     now=$(now_epoch)
     sql "INSERT OR REPLACE INTO agent_state (key, value, agent_id, updated_at)
-         VALUES ('${key}', '${value}', '${AGENT_ID}', ${now});"
+         VALUES ('$(esc "$key")', '$(esc "$value")', '$(esc "$AGENT_ID")', ${now});"
     echo -e "${GREEN}✅ State updated: ${key} = ${value}${NC}"
 }
 
@@ -588,7 +620,7 @@ cmd_budget() {
     validate_int "$max_tokens" "max_tokens"
     local agent_filter=""
 
-    [[ $# -gt 1 ]] && [[ "$2" == "--agent" ]] && agent_filter="AND agent_id = '$3'"
+    [[ $# -gt 1 ]] && [[ "$2" == "--agent" ]] && agent_filter="AND agent_id = '$(esc "$3")'"
 
     if ! command -v python3 &>/dev/null; then
         echo -e "${RED}Error:${NC} python3 required for budget command"
@@ -642,7 +674,7 @@ cmd_export() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --type) type_filter="AND type = '$2'"; shift 2 ;;
+            --type) type_filter="AND type = '$(esc "$2")'"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -668,7 +700,7 @@ cmd_identity() {
     today=$(date +%Y-%m-%d)
 
     sql "INSERT INTO identity_evolution (date, shift, trigger, agent_id, created_at)
-         VALUES ('${today}', '${shift_text//\'/\'\'}', '${trigger_text//\'/\'\'}', '${AGENT_ID}', ${now});"
+         VALUES ('${today}', '$(esc "$shift_text")', '$(esc "$trigger_text")', '$(esc "$AGENT_ID")', ${now});"
     echo -e "${GREEN}✅ Identity shift recorded${NC}"
 }
 

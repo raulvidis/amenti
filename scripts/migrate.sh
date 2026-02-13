@@ -16,6 +16,7 @@ if [[ ! -f "$DB" ]]; then
 fi
 
 sql() { sqlite3 -batch "$DB" "$1"; }
+esc() { printf '%s' "${1//\'/\'\'}"; }
 NOW=$(date +%s)
 
 echo "=== Amenti Migration ==="
@@ -29,23 +30,25 @@ echo ""
 MEMORY_FILE="$WORKSPACE/MEMORY.md"
 if [[ -f "$MEMORY_FILE" ]]; then
     echo "--- Migrating MEMORY.md ---"
-    MIGRATED=0
 
-    python3 << PYEOF
-import re, subprocess, time, sys
+    AMENTI_MIGRATE_DB="$DB" \
+    AMENTI_MIGRATE_AGENT="$AGENT_ID" \
+    AMENTI_MIGRATE_FILE="$MEMORY_FILE" \
+    python3 -c "
+import re, sqlite3, time, os
 
 now = int(time.time())
-agent = "$AGENT_ID"
-db = "$DB"
+agent = os.environ['AMENTI_MIGRATE_AGENT']
+db_path = os.environ['AMENTI_MIGRATE_DB']
+memory_file = os.environ['AMENTI_MIGRATE_FILE']
 
-def sql(query):
-    subprocess.run(["sqlite3", "-batch", db, query], check=True)
+db = sqlite3.connect(db_path)
 
-with open("$MEMORY_FILE", "r") as f:
+with open(memory_file, 'r') as f:
     content = f.read()
 
-lines = content.split("\n")
-section = ""
+lines = content.split('\n')
+section = ''
 migrated = 0
 
 for line in lines:
@@ -54,86 +57,88 @@ for line in lines:
         continue
 
     # Track sections
-    if line.startswith("## "):
+    if line.startswith('## '):
         section = line[3:].strip().lower()
         continue
-    if line.startswith("### "):
+    if line.startswith('### '):
         section = line[4:].strip().lower()
         continue
 
     # Skip headers and meta
-    if line.startswith("#") or line.startswith("*") or line.startswith("---"):
+    if line.startswith('#') or line.startswith('*') or line.startswith('---'):
         continue
 
     # Parse bullet points
-    if line.startswith("- "):
+    if line.startswith('- '):
         item = line[2:].strip()
 
         # Skip completed items
-        if item.startswith("[x]") or item.startswith("~~"):
+        if item.startswith('[x]') or item.startswith('~~'):
             continue
 
-        # Active tasks → action_items
-        if item.startswith("[ ]"):
+        # Active tasks -> action_items
+        if item.startswith('[ ]'):
             task = item[4:].strip()
-            task_esc = task.replace("'", "''")
-            sql(f"INSERT INTO action_items (description, source, priority, status, agent_id, created_at) VALUES ('{task_esc}', 'migration', 'normal', 'open', '{agent}', {now});")
+            db.execute(
+                '''INSERT INTO action_items (description, source, priority, status, agent_id, created_at)
+                   VALUES (?, 'migration', 'normal', 'open', ?, ?)''',
+                (task, agent, now))
             migrated += 1
             continue
 
         # Detect memory type from content/section
-        mtype = "fact"
+        mtype = 'fact'
         confidence = 0.85
 
-        # Check for known patterns
         item_lower = item.lower()
-        if any(w in section for w in ["lesson", "rule", "critical"]):
-            mtype = "principle"
+        if any(w in section for w in ['lesson', 'rule', 'critical']):
+            mtype = 'principle'
             confidence = 0.95
-        elif any(w in section for w in ["insight", "key insight"]):
-            mtype = "pattern"
+        elif any(w in section for w in ['insight', 'key insight']):
+            mtype = 'pattern'
             confidence = 0.85
-        elif any(w in item_lower for w in ["preference", "likes", "hates", "loves", "wants"]):
-            mtype = "preference"
+        elif any(w in item_lower for w in ['preference', 'likes', 'hates', 'loves', 'wants']):
+            mtype = 'preference'
             confidence = 0.90
-        elif any(w in item_lower for w in ["goal", "target", "plan", "commit"]):
-            mtype = "commitment"
+        elif any(w in item_lower for w in ['goal', 'target', 'plan', 'commit']):
+            mtype = 'commitment'
             confidence = 0.90
-        elif any(w in item_lower for w in ["bug", "fix", "error", "docker", "nginx", "config"]):
-            mtype = "skill"
+        elif any(w in item_lower for w in ['bug', 'fix', 'error', 'docker', 'nginx', 'config']):
+            mtype = 'skill'
             confidence = 0.90
-        elif any(w in item_lower for w in ["friend", "relationship", "girlfriend", "partner"]):
-            mtype = "relationship"
+        elif any(w in item_lower for w in ['friend', 'relationship', 'girlfriend', 'partner']):
+            mtype = 'relationship'
             confidence = 0.90
 
         # Strip markdown formatting
         item = re.sub(r'\*\*(.+?)\*\*', r'\1', item)
-        item = re.sub(r'[✅❌🔥💡🤔🚀✨]', '', item).strip()
+        item = re.sub(r'[^\\w\\s.,;:!?\\-\\(\\)\\'\\\"/@#\\$%&+=]', '', item).strip()
         item = re.sub(r'^—\s*', '', item).strip()
 
         if len(item) < 5:
             continue
 
-        item_esc = item.replace("'", "''")
         tokens = len(item) // 4
 
-        # Generate rich tags: key words + synonyms + abbreviations + numbers
-        # Extract all meaningful words (3+ chars)
+        # Generate rich tags
         words = re.findall(r'\b[A-Za-z0-9]{3,}\b', item_lower)
-        # Also extract special tokens: version numbers, paths, acronyms
-        specials = re.findall(r'\b[A-Z]{2,}\b', item)  # acronyms like DB, SSH, PM2
-        specials += re.findall(r'\d+[kKmM]?\b', item)  # numbers like 3k, 30k, 256MB
-        specials += re.findall(r'v?\d+\.\d+', item)  # versions like 4.6, 3.38
-        # Named entities (capitalized words)
+        specials = re.findall(r'\b[A-Z]{2,}\b', item)
+        specials += re.findall(r'\d+[kKmM]?\b', item)
+        specials += re.findall(r'v?\d+\.\d+', item)
         names = re.findall(r'\b[A-Z][a-z]{2,}\b', item)
         all_tags = list(set([w.lower() for w in words + specials + names if len(w) >= 2]))[:15]
-        tags = ",".join(all_tags)
+        tags = ','.join(all_tags)
 
-        sql(f"INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at) VALUES ('{mtype}', '{item_esc}', 'migration', {confidence}, '{tags}', {tokens}, '{agent}', {now}, {now});")
+        db.execute(
+            '''INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
+               VALUES (?, ?, 'migration', ?, ?, ?, ?, ?, ?)''',
+            (mtype, item, confidence, tags, tokens, agent, now, now))
         migrated += 1
 
-print(f"Migrated: {migrated} items from MEMORY.md")
-PYEOF
+db.commit()
+db.close()
+print(f'Migrated: {migrated} items from MEMORY.md')
+"
 
 else
     echo "No MEMORY.md found at $MEMORY_FILE — skipping"
@@ -149,17 +154,17 @@ for logfile in "$WORKSPACE"/memory/20??-??-??.md; do
     date_str=$(basename "$logfile" .md)
 
     # Check if already migrated
-    existing=$(sql "SELECT COUNT(*) FROM daily_logs WHERE date = '${date_str}' AND agent_id = '${AGENT_ID}';")
+    existing=$(sql "SELECT COUNT(*) FROM daily_logs WHERE date = '$(esc "$date_str")' AND agent_id = '$(esc "$AGENT_ID")';")
     if [[ "$existing" -gt 0 ]]; then
         echo "  Skipping $date_str (already migrated)"
         continue
     fi
 
-    # Read file content and insert as single log entry
-    content=$(cat "$logfile" | sed "s/'/''/g" | head -500)
+    # Read file content and insert
+    content=$(head -500 "$logfile")
     if [[ -n "$content" ]]; then
         sql "INSERT INTO daily_logs (date, category, content, agent_id, created_at)
-             VALUES ('${date_str}', 'daily_log', '${content}', '${AGENT_ID}', ${NOW});"
+             VALUES ('$(esc "$date_str")', 'daily_log', '$(esc "$content")', '$(esc "$AGENT_ID")', ${NOW});"
         LOG_COUNT=$((LOG_COUNT + 1))
         echo "  Migrated: $date_str"
     fi
@@ -175,18 +180,18 @@ for reffile in "$WORKSPACE"/memory/reflections/20??-??-??.md; do
     [[ -f "$reffile" ]] || continue
     date_str=$(basename "$reffile" .md)
 
-    existing=$(sql "SELECT COUNT(*) FROM reflections WHERE date = '${date_str}' AND agent_id = '${AGENT_ID}';")
+    existing=$(sql "SELECT COUNT(*) FROM reflections WHERE date = '$(esc "$date_str")' AND agent_id = '$(esc "$AGENT_ID")';")
     if [[ "$existing" -gt 0 ]]; then
         echo "  Skipping $date_str (already migrated)"
         continue
     fi
 
-    content=$(cat "$reffile" | sed "s/'/''/g" | head -500)
+    content=$(head -500 "$reffile")
     if [[ -n "$content" ]]; then
         # Extract first paragraph as summary
-        summary=$(echo "$content" | head -5 | tr '\n' ' ' | cut -c1-200 | sed "s/'/''/g")
+        summary=$(echo "$content" | head -5 | tr '\n' ' ' | cut -c1-200)
         sql "INSERT INTO reflections (date, summary, agent_id, created_at)
-             VALUES ('${date_str}', '${summary}', '${AGENT_ID}', ${NOW});"
+             VALUES ('$(esc "$date_str")', '$(esc "$summary")', '$(esc "$AGENT_ID")', ${NOW});"
         REF_COUNT=$((REF_COUNT + 1))
         echo "  Migrated: $date_str"
     fi
@@ -198,40 +203,47 @@ echo "Reflections migrated: $REF_COUNT"
 echo ""
 echo "--- Migrating open questions from MEMORY.md ---"
 if [[ -f "$MEMORY_FILE" ]]; then
-    python3 << PYEOF2
-import re, subprocess, time
+    AMENTI_MIGRATE_DB="$DB" \
+    AMENTI_MIGRATE_AGENT="$AGENT_ID" \
+    AMENTI_MIGRATE_FILE="$MEMORY_FILE" \
+    python3 -c "
+import re, sqlite3, time, os
 
 now = int(time.time())
-agent = "$AGENT_ID"
-db = "$DB"
+agent = os.environ['AMENTI_MIGRATE_AGENT']
+db_path = os.environ['AMENTI_MIGRATE_DB']
+memory_file = os.environ['AMENTI_MIGRATE_FILE']
 
-def sql(query):
-    subprocess.run(["sqlite3", "-batch", db, query], check=True)
+db = sqlite3.connect(db_path)
 
-with open("$MEMORY_FILE", "r") as f:
+with open(memory_file, 'r') as f:
     content = f.read()
 
 in_questions = False
 migrated = 0
 
-for line in content.split("\n"):
+for line in content.split('\n'):
     line = line.strip()
-    if "open question" in line.lower() or "## questions" in line.lower():
+    if 'open question' in line.lower() or '## questions' in line.lower():
         in_questions = True
         continue
-    if line.startswith("## ") and in_questions:
+    if line.startswith('## ') and in_questions:
         in_questions = False
         continue
 
-    if in_questions and line.startswith("- [ ]"):
+    if in_questions and line.startswith('- [ ]'):
         q = line[6:].strip()
         if q:
-            q_esc = q.replace("'", "''")
-            sql(f"INSERT INTO open_questions (question, context, status, agent_id, created_at) VALUES ('{q_esc}', 'migrated from MEMORY.md', 'open', '{agent}', {now});")
+            db.execute(
+                '''INSERT INTO open_questions (question, context, status, agent_id, created_at)
+                   VALUES (?, 'migrated from MEMORY.md', 'open', ?, ?)''',
+                (q, agent, now))
             migrated += 1
 
-print(f"Questions migrated: {migrated}")
-PYEOF2
+db.commit()
+db.close()
+print(f'Questions migrated: {migrated}')
+"
 fi
 
 # ---- Summary ----
@@ -244,4 +256,4 @@ echo -n "Reflections:        "; sql "SELECT COUNT(*) FROM reflections;"
 echo -n "Action items:       "; sql "SELECT COUNT(*) FROM action_items WHERE status = 'open';"
 echo -n "Open questions:     "; sql "SELECT COUNT(*) FROM open_questions WHERE status = 'open';"
 echo ""
-echo "✅ Migration complete. Review with: amenti stats"
+echo "Migration complete. Review with: amenti stats"
