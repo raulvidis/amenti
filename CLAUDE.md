@@ -26,7 +26,7 @@ Pure Bash + SQLite. No package manager, no build system. Requires: SQLite3, Bash
 # Migrate from file-based memory
 ./scripts/migrate.sh /path/to/workspace
 
-# CLI usage (requires AMENTI_DB env var or defaults to ./amenti.db)
+# CLI usage (reads from ~/.config/amenti/config, AMENTI_DB env var, or defaults to ./amenti.db)
 ./bin/amenti help
 ./bin/amenti stats
 ```

@@ -6,7 +6,28 @@
 
 set -euo pipefail
 
-# Database path: configurable via env or default
+# Load config file if it exists (solves env var inheritance in spawned agents)
+# Config file format: KEY=VALUE, one per line. Supports AMENTI_DB and AMENTI_AGENT.
+# Lookup order: $AMENTI_CONFIG, ~/.config/amenti/config, ~/.amentirc
+_load_config() {
+    local cfg=""
+    for candidate in "${AMENTI_CONFIG:-}" "$HOME/.config/amenti/config" "$HOME/.amentirc"; do
+        [[ -n "$candidate" && -f "$candidate" ]] && { cfg="$candidate"; break; }
+    done
+    [[ -z "$cfg" ]] && return
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        key=$(echo "$key" | tr -d '[:space:]')
+        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$key" in
+            AMENTI_DB)    [[ -z "${AMENTI_DB:-}" ]]    && export AMENTI_DB="$value" ;;
+            AMENTI_AGENT) [[ -z "${AMENTI_AGENT:-}" ]] && export AMENTI_AGENT="$value" ;;
+        esac
+    done < "$cfg"
+}
+_load_config
+
+# Database path: env var > config file > default
 DB="${AMENTI_DB:-amenti.db}"
 AGENT_ID="${AMENTI_AGENT:-default}"
 
@@ -49,6 +70,13 @@ ${YELLOW}Commands:${NC}
 ${YELLOW}Environment:${NC}
   AMENTI_DB       Database path (default: amenti.db)
   AMENTI_AGENT    Agent ID (default: default)
+  AMENTI_CONFIG   Config file path (default: ~/.config/amenti/config or ~/.amentirc)
+
+${YELLOW}Config file:${NC}
+  Create ~/.config/amenti/config or ~/.amentirc with:
+    AMENTI_DB=/path/to/amenti.db
+    AMENTI_AGENT=your_agent_name
+  Config file values are used when env vars are not set.
 
 ${YELLOW}Examples:${NC}
   amenti search "deployment issues" --type fact --min-confidence 0.8
@@ -122,6 +150,18 @@ cmd_init() {
         exit 1
     fi
     echo -e "${GREEN}✅ Database initialized at $DB${NC}"
+
+    # Create config file if it doesn't exist (solves env var inheritance for spawned agents)
+    local config_dir="$HOME/.config/amenti"
+    local config_file="$config_dir/config"
+    if [[ ! -f "$config_file" && ! -f "$HOME/.amentirc" ]]; then
+        mkdir -p "$config_dir"
+        cat > "$config_file" <<CONF
+AMENTI_DB=$(readlink -f "$DB")
+AMENTI_AGENT=$AGENT_ID
+CONF
+        echo -e "${GREEN}✅ Config written to $config_file${NC}"
+    fi
 }
 
 cmd_search() {

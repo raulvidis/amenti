@@ -15,6 +15,14 @@ cd /path/to/amenti && ./scripts/init-db.sh
 ln -sf /path/to/amenti/bin/amenti /usr/local/bin/amenti
 ```
 
+This creates a config file at `~/.config/amenti/config` so spawned agents and sub-processes can find the database without needing the env var. If the config file wasn't created automatically, create it manually:
+
+```bash
+mkdir -p ~/.config/amenti
+echo "AMENTI_DB=/path/to/your/workspace/amenti.db" > ~/.config/amenti/config
+echo "AMENTI_AGENT=your_agent_name" >> ~/.config/amenti/config
+```
+
 ### 2. Migrate your existing memory files
 
 If you have existing files (MEMORY.md, daily logs, reflections), migrate them into the database:
