@@ -2,7 +2,7 @@
 
 Persistent memory for AI agents. More memory, fewer tokens.
 
-Amenti replaces bloated context files with a SQLite-backed memory system using FTS5 full-text search. Agents boot with a tiny task list and retrieve relevant memories on demand.
+Amenti replaces bloated context files with a SQLite-backed memory system using **hybrid search: FTS5 full-text + vector embeddings (semantic)**. Agents boot with a tiny task list and retrieve relevant memories on demand.
 
 ## How It Works
 
@@ -20,7 +20,9 @@ Session activity → daily_logs (30 days) → reflections → memories (permanen
 
 ## Features
 
-- **FTS5 full-text search** — fast keyword search across all memories, zero maintenance
+- **Hybrid search** — FTS5 keywords + LIKE fallback + vector similarity (semantic)
+- **Local embeddings** — all-MiniLM-L6-v2 (80MB, 384d, ~1ms/embed, zero API cost)
+- **Auto-embed on store** — new memories get vectorized automatically
 - **CLI abstraction** — `amenti search`, `amenti store`, `amenti budget` — no raw SQL
 - **Memory linking** — memories form a graph (supports, contradicts, depends_on, related)
 - **Context budget** — "give me top memories that fit in N tokens"
@@ -28,7 +30,26 @@ Session activity → daily_logs (30 days) → reflections → memories (permanen
 - **Smart retention** — high-confidence data auto-promotes before 30-day cleanup
 - **Multi-agent** — agents share a DB, scoped by agent_id
 - **Action-driven reflections** — reflections produce tasks, not just summaries
+- **Task management** — built-in action items with priority and status tracking
 - **Token efficient** — 80-95% reduction vs file-based memory
+
+## Search Architecture
+
+Amenti uses a 3-strategy hybrid search that combines precision with understanding:
+
+```
+Query → FTS5 (exact keywords)     → results
+      → LIKE (partial match)      → merged & deduplicated
+      → Vector similarity (semantic) → sorted by relevance
+```
+
+| Strategy | Strengths | Example |
+|----------|-----------|---------|
+| FTS5 | Exact keyword hits, instant | "Docker restart policy" → finds "Docker restart" |
+| LIKE | Partial matches, typo-tolerant | "deploy" → finds "deployment" |
+| Vector | Semantic understanding | "significant other abroad" → finds "girlfriend in Japan" |
+
+When the embed server is running, all three strategies run on every search. Results are merged, deduplicated, and ranked. When it's not running, FTS5 + LIKE still work normally.
 
 ## Schema
 
@@ -36,7 +57,7 @@ Session activity → daily_logs (30 days) → reflections → memories (permanen
 
 | Table | Purpose |
 |-------|---------|
-| `memories` | Permanent knowledge (FTS5, linked, tagged, token-estimated) |
+| `memories` | Permanent knowledge (FTS5, vector embeddings, linked, tagged) |
 | `memory_links` | Relationships between memories (graph) |
 | `daily_logs` | Raw session notes (30 days, FTS5) |
 | `reflections` | Structured processing |
@@ -49,11 +70,12 @@ Session activity → daily_logs (30 days) → reflections → memories (permanen
 
 ```bash
 # 1. Initialize the database
+export AMENTI_DB=/path/to/amenti.db
+export AMENTI_AGENT=your_agent_name
 ./scripts/init-db.sh
 
 # 2. Install the CLI
 ln -s $(pwd)/bin/amenti /usr/local/bin/amenti
-export AMENTI_DB=/path/to/amenti.db
 
 # 3. Migrate existing file-based memory
 ./scripts/migrate.sh /path/to/agent/workspace
@@ -63,13 +85,35 @@ cp templates/MEMORY.md /path/to/workspace/MEMORY.md
 cp templates/SKILL.md /path/to/workspace/skills/amenti/SKILL.md
 ```
 
+### Vector Embeddings (recommended)
+
+```bash
+# Install dependencies
+pip3 install sentence-transformers
+
+# Start the embed server (~500MB RAM, loads all-MiniLM-L6-v2)
+python3 src/embed_server.py &
+
+# Or with PM2 for persistence:
+pm2 start src/embed_server.py --name amenti-embed --interpreter python3
+pm2 save
+
+# Embed all existing memories
+./scripts/reindex.sh --force
+```
+
+The embed server runs on `localhost:9819`. When running:
+- `amenti store` auto-embeds new memories (🧬 indicator)
+- `amenti search` uses all 3 strategies (FTS5 + LIKE + vector)
+- Swap models anytime — just `reindex.sh --force` after
+
 ## CLI
 
 ```bash
-# Search
+# Search (hybrid: FTS5 + LIKE + vector)
 amenti search "deployment issues" --type fact --min-confidence 0.8
 
-# Store (with tags for better FTS5 hits)
+# Store (auto-embeds when embed server is running)
 amenti store --type fact --content "User loves sim racing" --confidence 0.95 --tags "hobby,racing,iracing"
 
 # Link memories
@@ -89,6 +133,10 @@ amenti task --done 3
 # Daily logs
 amenti log "Fixed Docker restart policy issue" --category task
 amenti logs --search "docker"
+
+# Vector reindex
+amenti reindex              # embed non-embedded memories
+amenti reindex --force      # re-embed ALL (after model swap)
 
 # Stats
 amenti stats
@@ -122,7 +170,7 @@ AMENTI_AGENT=cleo amenti store --type fact --content "..."
 
 ## Smart Retention
 
-Not all data is equal. Before 30-day cleanup:
+Before 30-day cleanup:
 
 1. High-confidence memories (≥0.80) from reflections are **auto-promoted** to permanent
 2. Distilled daily logs and reflections are deleted
@@ -132,7 +180,7 @@ Not all data is equal. Before 30-day cleanup:
 
 ## Memory Linking
 
-Memories aren't flat — they form a graph:
+Memories form a graph:
 
 ```bash
 amenti link 5 12 --relation supports    # "quit corporate" supports "revenue target"
@@ -142,17 +190,53 @@ amenti recall 5                         # Shows memory #5 + all linked memories
 
 Relations: `supports`, `contradicts`, `depends_on`, `related`, `supersedes`
 
-## Multi-Agent
+## Task Management
 
-Multiple agents can share one database:
+Tasks live in the database, not files:
 
 ```bash
-export AMENTI_AGENT=nova     # All operations scoped to Nova
+amenti task --add --description "Deploy to staging" --priority high
+amenti tasks --status open
+amenti tasks --status in_progress
+amenti task --done 3
+amenti task --cancel 5
+```
+
+Recommended cron cycles:
+- **Every 30 min:** Check open tasks, update stuck ones
+- **Every 2 hours:** Analyze task landscape, generate suggestions
+
+## Multi-Agent
+
+Multiple agents share one database, scoped by agent_id:
+
+```bash
+export AMENTI_AGENT=nova
 amenti store --type fact --content "..."
 
-export AMENTI_AGENT=cleo     # Switch to Cleo
-amenti search "calendar events" --agent nova  # Search Nova's memories from Cleo
+export AMENTI_AGENT=cleo
+amenti search "calendar events" --agent nova  # Cross-agent search
 ```
+
+## Embed Server
+
+The embed server provides local vector embeddings with zero API cost:
+
+| Property | Value |
+|----------|-------|
+| Model | all-MiniLM-L6-v2 |
+| Dimensions | 384 |
+| RAM | ~500MB |
+| Speed | ~1ms per embedding (after model load) |
+| Port | 9819 (configurable via `AMENTI_EMBED_PORT`) |
+
+**Endpoints:**
+- `POST /embed` — Embed single text: `{"text": "..."}`
+- `POST /embed_batch` — Embed multiple: `{"texts": ["...", "..."]}`
+- `GET /health` — Health check
+- `GET /info` — Model info
+
+**Swapping models:** Change `AMENTI_EMBED_MODEL` env var, restart server, run `amenti reindex --force`.
 
 ## Project Structure
 
@@ -161,18 +245,22 @@ amenti/
 ├── README.md
 ├── LICENSE
 ├── bin/
-│   └── amenti               # CLI tool
+│   └── amenti                # CLI tool (bash)
 ├── src/
-│   └── schema.sql           # SQLite schema (8 tables, FTS5, triggers, views)
+│   ├── schema.sql            # SQLite schema (8 tables, FTS5, triggers, views)
+│   ├── schema_vec.sql        # Vector embedding migration
+│   └── embed_server.py       # Local embedding server (MiniLM)
 ├── templates/
-│   ├── MEMORY.md            # Lean memory.md template (tasks only)
-│   └── SKILL.md             # Agent skill file (how to use Amenti)
+│   ├── MEMORY.md             # Lean memory.md template
+│   ├── AGENTS.md             # Agent config template
+│   └── SKILL.md              # Agent skill file (how to use Amenti)
 ├── scripts/
-│   ├── init-db.sh           # Initialize database
-│   ├── migrate.sh           # Migrate from file-based memory
-│   └── cleanup.sh           # Smart cleanup with auto-promotion
+│   ├── init-db.sh            # Initialize database
+│   ├── migrate.sh            # Migrate from file-based memory
+│   ├── reindex.sh            # Batch embed all memories
+│   └── cleanup.sh            # Smart cleanup with auto-promotion
 └── docs/
-    └── ARCHITECTURE.md      # Design decisions and rationale
+    └── ARCHITECTURE.md       # Design decisions and rationale
 ```
 
 ## License
