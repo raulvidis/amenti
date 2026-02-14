@@ -70,6 +70,47 @@ Write this in your own words. The goal is that any future session loads MEMORY.m
 
 ---
 
+### 5. Set up vector embeddings (optional but recommended)
+
+Vector embeddings enable semantic search — finding memories by meaning, not just keywords. "Significant other studying abroad" will find "girlfriend in Nagoya, Japan" even without keyword overlap.
+
+**Requirements:** Python 3 + sentence-transformers
+
+```bash
+pip3 install sentence-transformers
+```
+
+**Start the embed server:**
+
+```bash
+python3 /path/to/amenti/src/embed_server.py &
+# Or with PM2 for persistence:
+pm2 start /path/to/amenti/src/embed_server.py --name amenti-embed --interpreter python3
+pm2 save
+```
+
+The server runs on `localhost:9819` (~500MB RAM, uses all-MiniLM-L6-v2 model, 384 dimensions).
+
+**Embed all existing memories:**
+
+```bash
+cd /path/to/amenti && ./scripts/reindex.sh --force
+```
+
+**How it works:**
+- `amenti store` auto-embeds new memories when the embed server is running (🧬 indicator)
+- `amenti search` uses hybrid search: FTS5 → LIKE → Vector similarity
+- Vector results appear with `match_type: "vector"` and a `similarity` score
+- If the embed server is not running, everything works normally (FTS5 + LIKE only)
+
+**Re-embed after model upgrade:**
+
+```bash
+cd /path/to/amenti && ./scripts/reindex.sh --force
+```
+
+---
+
 ## How Memory Works
 
 ### The Database is Your Brain
@@ -219,6 +260,15 @@ amenti budget 2000       # top memories within 2000 tokens
 ```bash
 amenti identity "Becoming more proactive" --trigger "User feedback"
 ```
+
+### Vector Reindex
+
+```bash
+amenti reindex            # embed only non-embedded memories
+amenti reindex --force    # re-embed ALL memories (e.g., after model upgrade)
+```
+
+Requires the embed server running on localhost:9819.
 
 ### Stats & Export
 

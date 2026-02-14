@@ -46,7 +46,7 @@ ${YELLOW}Usage:${NC}
   amenti <command> [options]
 
 ${YELLOW}Commands:${NC}
-  ${GREEN}search${NC}    <query>              Search memories (FTS5)
+  ${GREEN}search${NC}    <query>              Search memories (FTS5 + vector)
   ${GREEN}store${NC}     --type --content      Store a new memory
   ${GREEN}recall${NC}    <id>                  Get a specific memory + linked memories
   ${GREEN}link${NC}      <source> <target>     Link two memories
@@ -66,6 +66,7 @@ ${YELLOW}Commands:${NC}
   ${GREEN}export${NC}    [--type]              Export memories as JSON
   ${GREEN}init${NC}                            Initialize database
   ${GREEN}identity${NC}  <shift>               Record an identity evolution
+  ${GREEN}reindex${NC}  [--force]             Embed all memories with vectors
 
 ${YELLOW}Environment:${NC}
   AMENTI_DB       Database path (default: amenti.db)
@@ -128,6 +129,114 @@ validate_num() {
         echo -e "${RED}Error:${NC} $2 must be a number"
         exit 1
     fi
+}
+
+# ---- Embedding Helpers ----
+
+EMBED_PORT="${AMENTI_EMBED_PORT:-9819}"
+EMBED_URL="http://127.0.0.1:${EMBED_PORT}"
+
+# Check if embed server is running
+embed_available() {
+    curl -sf "${EMBED_URL}/health" > /dev/null 2>&1
+}
+
+# Embed a single text, returns JSON vector array
+embed_text() {
+    local text="$1"
+    local payload
+    payload=$(python3 -c "import json; print(json.dumps({'text': '$( echo "$text" | sed "s/'/\\\\'/g" | tr '\n' ' ' )'}))")
+    curl -sf -X POST "${EMBED_URL}/embed" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['vector']))"
+}
+
+# Cosine similarity search via Python (works with JSON-stored vectors)
+vec_search() {
+    local query_text="$1"
+    local limit="${2:-5}"
+    local type_filter="${3:-}"
+    local confidence_filter="${4:-}"
+    local agent_filter="${5:-}"
+
+    # Get query vector
+    local query_vec
+    query_vec=$(embed_text "$query_text") || return 1
+
+    AMENTI_VEC_DB="$DB" \
+    AMENTI_VEC_QUERY="$query_vec" \
+    AMENTI_VEC_LIMIT="$limit" \
+    AMENTI_VEC_TYPE="$type_filter" \
+    AMENTI_VEC_CONFIDENCE="$confidence_filter" \
+    AMENTI_VEC_AGENT="$agent_filter" \
+    python3 -c "
+import sqlite3, json, os, sys
+
+db_path = os.environ['AMENTI_VEC_DB']
+query_vec = json.loads(os.environ['AMENTI_VEC_QUERY'])
+limit = int(os.environ['AMENTI_VEC_LIMIT'])
+type_filter = os.environ.get('AMENTI_VEC_TYPE', '')
+confidence_filter = os.environ.get('AMENTI_VEC_CONFIDENCE', '')
+agent_filter = os.environ.get('AMENTI_VEC_AGENT', '')
+
+db = sqlite3.connect(db_path)
+db.row_factory = sqlite3.Row
+
+# Get all active memories with embeddings
+where_clauses = ['is_active = 1', 'embedding IS NOT NULL']
+params = []
+if type_filter:
+    where_clauses.append('type = ?')
+    params.append(type_filter)
+if confidence_filter:
+    where_clauses.append('confidence >= ?')
+    params.append(float(confidence_filter))
+if agent_filter:
+    where_clauses.append('agent_id = ?')
+    params.append(agent_filter)
+
+where_sql = ' AND '.join(where_clauses)
+rows = db.execute(f'''
+    SELECT id, type, content, confidence, tags, agent_id, token_estimate,
+           created_at, updated_at, embedding
+    FROM memories WHERE {where_sql}
+''', params).fetchall()
+
+if not rows:
+    print('[]')
+    sys.exit(0)
+
+# Compute cosine similarity
+import math
+def cosine_sim(a, b):
+    dot = sum(x*y for x,y in zip(a,b))
+    na = math.sqrt(sum(x*x for x in a))
+    nb = math.sqrt(sum(x*x for x in b))
+    return dot / (na * nb) if na > 0 and nb > 0 else 0.0
+
+results = []
+for row in rows:
+    vec = json.loads(row['embedding'])
+    sim = cosine_sim(query_vec, vec)
+    if sim > 0.25:  # minimum similarity threshold
+        results.append({
+            'id': row['id'],
+            'type': row['type'],
+            'content': row['content'],
+            'confidence': row['confidence'],
+            'tags': row['tags'],
+            'agent_id': row['agent_id'],
+            'token_estimate': row['token_estimate'],
+            'created_at': row['created_at'],
+            'updated_at': row['updated_at'],
+            'match_type': 'vector',
+            'similarity': round(sim, 4)
+        })
+
+results.sort(key=lambda x: x['similarity'], reverse=True)
+print(json.dumps(results[:limit], indent=2, default=str))
+db.close()
+"
 }
 
 # ---- Commands ----
@@ -294,6 +403,42 @@ print(json.dumps(results[:limit], indent=2, default=str))
 db.close()
 " 2>&1)
 
+    # Strategy 4: Vector similarity search (always runs if embed server available)
+    if embed_available; then
+        local vec_results
+        vec_results=$(vec_search "$query" "$limit" "$type_filter" "$confidence_filter" "$agent_filter" 2>/dev/null) || vec_results="[]"
+
+        # Merge: combine FTS/LIKE + vector results, deduplicate, sort by relevance
+        results=$(python3 -c "
+import json, sys
+fts = json.loads('''$results''')
+vec = json.loads('''$vec_results''')
+seen = {}
+# Add FTS results with a synthetic score
+for i, r in enumerate(fts):
+    rid = r.get('id')
+    if rid:
+        r['_score'] = 1.0 - (i * 0.05)  # FTS rank order
+        seen[rid] = r
+# Add/upgrade with vector results (high similarity overrides)
+for v in vec:
+    vid = v.get('id')
+    sim = v.get('similarity', 0)
+    if vid in seen:
+        # Boost score if vector also found it
+        seen[vid]['_score'] = max(seen[vid]['_score'], sim + 0.5)
+        if 'similarity' not in seen[vid]:
+            seen[vid]['similarity'] = sim
+    else:
+        v['_score'] = sim
+        seen[vid] = v
+merged = sorted(seen.values(), key=lambda x: x.get('_score', 0), reverse=True)
+for m in merged:
+    m.pop('_score', None)
+print(json.dumps(merged[:${limit}], indent=2, default=str))
+" 2>/dev/null) || true
+    fi
+
     echo "$results"
 }
 
@@ -328,7 +473,21 @@ cmd_store() {
     id=$(sql "INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
          VALUES ('$(esc "$type")', '$(esc "$content")', '$(esc "$source")', ${confidence}, '$(esc "$tags")', ${tokens}, '$(esc "$agent")', ${now}, ${now});
          SELECT last_insert_rowid();")
-    echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
+
+    # Auto-embed if embed server is running
+    if embed_available; then
+        local embed_input="${content} ${tags}"
+        local vec
+        vec=$(embed_text "$embed_input" 2>/dev/null) || true
+        if [[ -n "$vec" && "$vec" != "null" ]]; then
+            sql "UPDATE memories SET embedding = '$(esc "$vec")' WHERE id = ${id};"
+            echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens}, 🧬 embedded)"
+        else
+            echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
+        fi
+    else
+        echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
+    fi
 }
 
 cmd_recall() {
@@ -744,6 +903,18 @@ cmd_identity() {
     echo -e "${GREEN}✅ Identity shift recorded${NC}"
 }
 
+cmd_reindex() {
+    check_db
+    local script_dir
+    script_dir="$(dirname "$(readlink -f "$0")")/../scripts"
+    if [[ -f "$script_dir/reindex.sh" ]]; then
+        AMENTI_DB="$DB" bash "$script_dir/reindex.sh" "$@"
+    else
+        echo -e "${RED}Error:${NC} reindex.sh not found at $script_dir/reindex.sh"
+        exit 1
+    fi
+}
+
 # ---- Router ----
 
 [[ $# -eq 0 ]] && usage
@@ -771,6 +942,7 @@ case "$cmd" in
     export)     cmd_export "$@" ;;
     init)       cmd_init ;;
     identity)   cmd_identity "$@" ;;
+    reindex)    cmd_reindex "$@" ;;
     help|--help|-h) usage ;;
     *)
         echo -e "${RED}Unknown command: ${cmd}${NC}"
