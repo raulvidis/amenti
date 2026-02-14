@@ -1,70 +1,65 @@
 # MEMORY.md — Active Context
 
-*This file is loaded every API call. Keep it LEAN. Target: <3k tokens.*
-*Everything else lives in Amenti DB. If it's not active, it doesn't belong here.*
+*This file is loaded every session. Keep it under 3k tokens.*
+*Your real memories are in the Amenti database. This file helps you find them.*
 
 ---
 
-## Memory Index
+## Active Tasks
 
-**This is your most important section.** It tells you what's in your DB without searching.
+<!-- Only tasks you're working on THIS WEEK. Completed → amenti log. -->
 
-*Scan this table BEFORE searching — use these tags for accurate retrieval.*
+## Topics
 
-### How to use
+<!--
+Each row is a TOPIC — a cluster of related memories in your database.
+The Keywords column lists EVERY word someone might use to ask about this topic.
+More keywords = more ways to find the memory. Think synonyms, aliases, abbreviations.
 
-1. **Scan the table** for rows matching the user's topic
-2. **Copy the tags** from matching rows into your search query
-3. **Run `amenti search "tags"`** to retrieve the full memory
+When someone asks a question:
+1. Scan this table — which topic matches?
+2. Pick 2-4 keywords from that row
+3. Run: amenti search "keyword1 keyword2 keyword3"
+4. Answer from the search result, NOT from this table
 
-### Tag Search Examples
-
-> User asks: "What's my girlfriend's name?"
-> You scan the index, find: `girlfriend, iri, japan, nagoya, relationship`
-> You run: `amenti search "girlfriend iri"`
-> DB returns the full memory with all details.
-
-> User asks: "How should I configure Docker restart?"
-> You scan the index, find: `docker, restart, policy, container`
-> You run: `amenti search "docker restart policy"`
-> DB returns the technical details.
-
-| Brief Description | Tags |
-|---|---|
-<!-- Examples — replace with real entries as you store memories: -->
-| User's girlfriend lives in Japan | girlfriend, iri, japan, nagoya, relationship |
-| Docker restart policy must use on-failure | docker, restart, policy, container |
-| Prefers direct communication style | communication, preference, direct, honesty |
-
-<!-- RULES:
-- Add a row every time you `amenti store` something
-- Tags must match what you stored (copy from --tags)
-- Remove rows when you `amenti forget` a memory
-- Keep descriptions short (5-10 words max)
-- This is your lookup table — if it's not here, you won't know to search for it
+This table is a LOOKUP INDEX. It does NOT contain answers.
+ALWAYS search the database before answering.
 -->
 
-## Now (what I'm working on this week)
+| Topic | Keywords |
+|---|---|
 
-- [ ] Example: Ship v2 of the API by Friday
-- [ ] Example: Fix FTS5 keyword mismatch issue
+<!--
+EXAMPLE (delete when you add real entries):
 
-## Hot Context (need-to-know for current conversations)
+| Topic | Keywords |
+|---|---|
+| girlfriend & relationship | girlfriend, partner, iri, nagoya, japan, brain science, masters, long distance, dating, relationship, love |
+| sim racing rig & stats | iracing, sim racing, rig, setup, hardware, simagic, alpha, moza, ks, simjack, pedals, wheel, seat, next level racing, victory, road atlanta, gt3, 3k, irating, safety rating |
+| docker restart lesson | docker, restart, policy, maximumretrycount, on-failure, retry, limit, container, restart loop, infinite |
+| charger incident feb 8 | charger, water, soaked, wet, rice, bag, dry, broken, feb 8 |
 
-<!-- Recent decisions, active project state, things that come up daily -->
-<!-- Move to DB once no longer actively referenced (1-2 weeks max) -->
+TIPS:
+- Include the actual terms from the stored memory
+- Include synonyms (girlfriend/partner, rig/setup/hardware)
+- Include abbreviations and numbers (GT3, 3k, 8443)
+- Include how someone would casually ask ("what happened to my charger")
+- 10-20 keywords per topic is ideal
+- Group related memories under one topic when they overlap
+- NEVER use hyphens in keywords. Use spaces: "road atlanta" not "road-atlanta", "sim racing" not "sim-racing"
+- FTS5 treats hyphens as part of one token — "road-atlanta" won't match a search for "road atlanta"
+-->
 
-## Key People
+## Hot Context
 
-<!-- Only people you interact with regularly — full details in DB -->
-- **Raul** — your human. Details in DB.
+<!-- Things that come up daily. Move to DB once no longer active (1-2 weeks max). -->
 
 ---
 
 ### Rules for this file
 
-1. **Max ~3k tokens.** If it's growing, move stuff to DB.
-2. **Only active items.** Completed tasks → `amenti log`. Lessons learned → `amenti store`.
-3. **Rotate weekly.** During reflection: finished? → DB. Stale? → DB. Still active? → stays.
-4. **No archives.** This is a working scratchpad, not a knowledge base.
-5. **Memory Index is sacred.** Always update it when storing/forgetting memories.
+1. **Under 3k tokens.** If it's growing, move knowledge to DB with `amenti store`.
+2. **Topics = pointers.** Never answer from the table — always search the DB first.
+3. **Sync the table.** Every store → add keywords to the matching topic (or create a new topic). Every forget → remove the topic if no memories left.
+4. **Fat keywords.** More keywords = better recall. Think: how would someone ask about this 6 months from now?
+5. **Only active items.** Completed tasks → `amenti log`. Lessons → `amenti store`.
