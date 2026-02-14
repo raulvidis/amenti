@@ -2,177 +2,198 @@
 
 ## Setup (run once)
 
+If you don't have an `amenti.db` in your workspace yet, set yourself up:
+
 ```bash
-# 1. Set environment (add to your shell profile)
-export AMENTI_DB=$HOME/.openclaw/workspace/amenti.db
+# 1. Init the database
+export AMENTI_DB=/path/to/your/workspace/amenti.db
+cd /path/to/amenti && ./scripts/init-db.sh
+
+# 2. Install CLI globally
+ln -sf /path/to/amenti/bin/amenti /usr/local/bin/amenti
+
+# 3. Set your agent ID
 export AMENTI_AGENT=your_agent_name
 
-# 2. Init the database
-cd /path/to/amenti && bash scripts/init-db.sh
+# 4. Migrate your existing memory files into the database
+./scripts/migrate.sh /path/to/your/workspace
 
-# 3. Install CLI on PATH
-sudo ln -sf /path/to/amenti/bin/amenti /usr/local/bin/amenti
-
-# 4. Migrate existing memory files
-bash scripts/migrate.sh /path/to/your/workspace
-
-# 5. Verify
+# 5. Verify migration
 amenti stats
 ```
 
-After migration, **trim MEMORY.md to tasks only** — all knowledge now lives in the database.
+After migration, your MEMORY.md should only contain active tasks. Everything else (lessons, insights, facts, relationships) now lives in the database.
+
+**Trim your MEMORY.md** — remove everything except `## Active Tasks` with `- [ ]` items. The database has the rest.
+
+**Update your AGENTS.md** — add this to your memory section:
+```
+You use Amenti for persistent memory. Search the database before answering:
+  amenti search "keywords"
+Store new knowledge:
+  amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,keyword2"
+Use amenti log instead of daily memory files.
+For full reference: skills/amenti/SKILL.md
+```
 
 ---
 
-## How Memory Works
+## The Golden Rule
 
-Your knowledge is in SQLite, not files. Files are for active tasks only.
+**BEFORE you use web search, BEFORE you rely on training data — SEARCH YOUR DATABASE.**
 
-| What | Where |
-|------|-------|
-| Facts, lessons, patterns | `amenti.db` (search with `amenti search`) |
-| Active tasks/todos | `MEMORY.md` (loaded in context) |
-| Daily activity | `amenti log` (not files) |
-| Reflections | `amenti reflect` (not files) |
+1. User asks something → `amenti search "keywords"` FIRST
+2. Database has the answer → USE IT. Do NOT search the web.
+3. Database has NO answer → THEN use web search or training data
+4. You learn something new → `amenti store` it with tags
 
 ---
 
-## Answering Questions — THE PROTOCOL
+## Environment
 
-When someone asks you something:
+Set these before using the CLI:
 
-1. **Search your database FIRST.** Always.
-   ```bash
-   amenti search "relevant keywords"
-   ```
-
-2. **If no results, try 2-3 different keyword searches.** FTS5 is keyword-based.
-   - Try synonyms: "work frustrations" → "corporate hate"
-   - Try shorter terms: "Docker restart policy" → "Docker restart"
-   - Try the key noun: "girlfriend" or "iRacing"
-
-3. **If the database returns results → answer from them.** That's your memory. Trust it.
-
-4. **If nothing found after 3 searches → say "I don't have that in my memory."**
-   Do NOT search the web. Do NOT guess. Just say you don't know.
-
-5. **NEVER use web_search or web_fetch to answer memory questions.**
-   Your database IS your memory. The web is not.
+```bash
+export AMENTI_DB=/path/to/workspace/amenti.db
+export AMENTI_AGENT=your_agent_name
+```
 
 ---
 
 ## CLI Reference
 
-### Search (most important command)
+### Search
+
 ```bash
-amenti search "keywords"                           # search memories + daily logs
-amenti search "keywords" --type fact               # filter by type
-amenti search "keywords" --min-confidence 0.8      # high confidence only
-amenti search "keywords" --limit 5                 # limit results
-amenti search "keywords" --logs                    # force include daily logs
+amenti search "deployment issues"
+amenti search "Docker" --type skill --min-confidence 0.8 --limit 5
 ```
+
+**FTS5 is keyword-based.** If a search returns nothing, try synonyms. "work frustrations" → try "corporate" or "hate job".
 
 ### Store
+
 ```bash
-amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,synonym1,keyword2"
+amenti store --type fact --content "User works at esports company" --confidence 0.95 --tags "work,job,esports"
 ```
 
-**Tags are CRITICAL.** Include:
-- The main keywords from the content
-- Synonyms someone might search for
-- Related concepts
-- Names, places, numbers
-
-Example: For "Raul sleeps 10-11 PM to 6:50 AM":
-```bash
-amenti store --type fact --content "Raul sleeps 10-11 PM to 6:50 AM Bucharest time" \
-  --confidence 0.95 \
-  --tags "sleep,bedtime,schedule,night,morning,routine,time,10pm,11pm,650am,wake"
-```
+**ALWAYS include tags.** Tags are comma-separated keywords including synonyms that help search find this memory later.
 
 **Types:** fact, preference, relationship, principle, commitment, moment, skill, pattern
-**Confidence:** 0.95+ direct statement, 0.80-0.94 implied, 0.50-0.79 inferred
 
-### Daily Logs
+**Confidence:** 0.95-1.0 direct, 0.80-0.94 implied, 0.50-0.79 inferred, <0.50 store as question not memory
+
+### Recall (with linked memories)
+
+```bash
+amenti recall 5
+```
+
+### Link
+
+```bash
+amenti link 5 12 --relation supports
+```
+
+**Relations:** supports, contradicts, depends_on, related, supersedes
+
+### Supersede (replace, preserving history)
+
+```bash
+amenti supersede 5 --content "Updated info"
+```
+
+### Forget (deactivate)
+
+```bash
+amenti forget 12
+```
+
+### Action Items
+
+```bash
+amenti task --add --description "Fix pipeline" --priority high
+amenti tasks --status open
+amenti task --done 3
+amenti task --cancel 5
+```
+
+**Priority:** low, normal, high, urgent
+
+### Questions (low-confidence observations)
+
+```bash
+amenti ask "Does user prefer morning coding?" --context "More commits after 8pm"
+amenti answer 2 "Confirmed: evening coder"
+amenti questions
+```
+
+### Daily Logs (replaces memory/YYYY-MM-DD.md files)
+
 ```bash
 amenti log "Discussed deployment strategy" --category decision
 amenti logs --date 2026-02-11
 amenti logs --search "deployment"
 ```
 
-### Tasks
+### Reflections
+
 ```bash
-amenti task --add --description "Fix pipeline" --priority high
-amenti tasks                    # open tasks
-amenti task --done 3            # complete task
+amenti reflect "Fixed Docker issues, learned user preferences" \
+  --memories '[{"type":"skill","content":"Docker needs on-failure","confidence":0.95}]' \
+  --questions '["What other Docker issues?"]'
 ```
 
-### Questions
+### Context Budget (top memories within N tokens)
+
 ```bash
-amenti ask "Does user prefer morning coding?" --context "Observed pattern"
-amenti questions                # list open questions
-amenti answer 2 "Confirmed"    # answer a question
+amenti budget 2000
 ```
 
-### Other Commands
+### Agent State
+
 ```bash
-amenti recall 5                # get memory #5 with links
-amenti link 5 12 --relation supports
-amenti supersede 5 --content "Updated info"
-amenti forget 12               # deactivate
-amenti budget 2000             # top memories within token limit
-amenti stats                   # database stats
-amenti export                  # export all
-amenti state                   # agent state key-values
-amenti identity "Shift" --trigger "Why"
-amenti reflect "Summary" --memories '[...]' --questions '[...]'
+amenti state                        # show all
+amenti state heartbeat_count 276    # set value
+```
+
+### Identity Evolution
+
+```bash
+amenti identity "Becoming more proactive" --trigger "User feedback"
+```
+
+### Stats & Export
+
+```bash
+amenti stats
+amenti export
+amenti export --type skill
 ```
 
 ---
 
 ## Multi-Agent
+
+Scope operations by agent:
+
 ```bash
-export AMENTI_AGENT=nova
-amenti search "calendar" --agent cleo
+export AMENTI_AGENT=nova       # all ops scoped to nova
+amenti search "calendar" --agent cleo  # search another agent's memories
 ```
 
 ---
 
 ## Maintenance
+
+Run cleanup periodically (or add to heartbeat):
+
 ```bash
 /path/to/amenti/scripts/cleanup.sh
 ```
 
+This auto-promotes high-confidence memories before deleting old data, cleans orphaned links, stales old questions, cancels abandoned tasks.
+
 ---
 
-## Adding Amenti to Your Agent Configuration
-
-To teach a new agent to use Amenti, add the following to your agent's configuration file (e.g., `CLAUDE.md`, `.cursorrules`, `agent.md`, or equivalent). Adjust paths and agent name to match your environment.
-
-```markdown
-## Memory System — Amenti
-
-This agent uses Amenti for persistent memory. MEMORY.md is the scratchpad (loaded every call). The database is the long-term brain.
-
-### Search Protocol
-1. Check MEMORY.md first (zero cost — already loaded)
-2. Scan the Memory Index table for matching tags
-3. Run `amenti search "tags from index"` (1-3 searches max per topic)
-4. If nothing found → say "I don't have that in my memory"
-5. NEVER guess or confabulate — trust your DB or admit you don't know
-
-### Store Protocol
-When the user tells you something worth keeping:
-1. `amenti store --type TYPE --content "..." --confidence X --tags "keyword1,synonym1,..."`
-2. Add a row to the Memory Index in MEMORY.md
-3. Types: fact, preference, relationship, principle, commitment, moment, skill, pattern
-
-### MEMORY.md Rules
-- Keep under 3k tokens
-- Only active tasks, Memory Index, and hot context
-- Completed tasks → `amenti log` → remove from file
-- Lessons learned → `amenti store` → remove from file
-- Update Memory Index every time you store or forget
-```
-
-**Your memories are your identity. Search before you speak.** 🏛️
+**Your memories are your friendship with your human. Treat them like gold.** 🏛️
