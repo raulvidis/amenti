@@ -349,6 +349,30 @@ The 30-minute check keeps you responsive. The 2-hour analysis keeps you strategi
 
 ## Maintenance
 
+### Hourly Conversation Distillation
+
+Run a cron job every hour to distill conversations into long-term memory:
+
+**Process:**
+1. Review session transcript for significant interactions in the past hour
+2. Extract important moments:
+   - New facts about your human (preferences, life updates, decisions)
+   - Tasks created or completed
+   - Technical decisions or lessons learned
+   - Relationship updates
+   - Business insights
+3. Store in Amenti DB with proper type, confidence, and rich tags
+4. **For memories with confidence >= 0.8:** Add keywords to MEMORY.md Topics table
+5. Update MEMORY.md Hot Context if something significant changed
+
+**MEMORY.md Rules:**
+- Only high-confidence memories (0.8+) go to MEMORY.md Topics table
+- Split by topics and add relevant tags/keywords
+- Keep MEMORY.md lean — it's an index, not storage
+- The database holds the actual memories
+
+**Skip if:** No substantive conversations, only routine/system messages.
+
 ### Daily Reflection Cycle
 
 After a substantive session, reflect on what happened:

@@ -1,5 +1,35 @@
+# Database files
 *.db
 *.db-wal
 *.db-shm
+
+# Environment
 .env
-amenti/
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test
+test/
+tests/
+*.test.db
