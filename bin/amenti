@@ -1,0 +1,1025 @@
+#!/usr/bin/env bash
+# ============================================================
+# Amenti CLI — Query abstraction for AI agents
+# Usage: amenti <command> [options]
+# ============================================================
+
+set -euo pipefail
+
+# Load config file if it exists (solves env var inheritance in spawned agents)
+# Config file format: KEY=VALUE, one per line. Supports AMENTI_DB and AMENTI_AGENT.
+# Lookup order: $AMENTI_CONFIG, ~/.config/amenti/config, ~/.amentirc
+_load_config() {
+    local cfg=""
+    for candidate in "${AMENTI_CONFIG:-}" "$HOME/.config/amenti/config" "$HOME/.amentirc"; do
+        [[ -n "$candidate" && -f "$candidate" ]] && { cfg="$candidate"; break; }
+    done
+    [[ -z "$cfg" ]] && return
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        key=$(echo "$key" | tr -d '[:space:]')
+        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$key" in
+            AMENTI_DB)    [[ -z "${AMENTI_DB:-}" ]]    && export AMENTI_DB="$value" ;;
+            AMENTI_AGENT) [[ -z "${AMENTI_AGENT:-}" ]] && export AMENTI_AGENT="$value" ;;
+        esac
+    done < "$cfg"
+}
+_load_config
+
+# Database path: env var > config file > default
+DB="${AMENTI_DB:-amenti.db}"
+AGENT_ID="${AMENTI_AGENT:-default}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+    cat <<EOF
+${CYAN}Amenti${NC} — Persistent memory for AI agents 🏛️
+
+${YELLOW}Usage:${NC}
+  amenti <command> [options]
+
+${YELLOW}Commands:${NC}
+  ${GREEN}search${NC}    <query>              Search memories (FTS5 + vector)
+  ${GREEN}store${NC}     --type --content      Store a new memory
+  ${GREEN}recall${NC}    <id>                  Get a specific memory + linked memories
+  ${GREEN}link${NC}      <source> <target>     Link two memories
+  ${GREEN}forget${NC}    <id>                  Deactivate a memory
+  ${GREEN}supersede${NC} <old_id> --content    Replace a memory (preserves history)
+  ${GREEN}tasks${NC}     [--status] [--priority]  List action items
+  ${GREEN}task${NC}      --add|--done|--cancel  Manage action items
+  ${GREEN}questions${NC} [--status]            List open questions
+  ${GREEN}ask${NC}       <question>            Add an open question
+  ${GREEN}answer${NC}    <id> <answer>         Answer a question
+  ${GREEN}log${NC}       <content>             Add a daily log entry
+  ${GREEN}logs${NC}      [--date] [--search]   Search daily logs
+  ${GREEN}reflect${NC}   <summary>             Create a reflection
+  ${GREEN}state${NC}     [key] [value]         Get/set agent state
+  ${GREEN}budget${NC}    <max_tokens>          Get top memories within token budget
+  ${GREEN}stats${NC}                           Show database statistics
+  ${GREEN}export${NC}    [--type]              Export memories as JSON
+  ${GREEN}init${NC}                            Initialize database
+  ${GREEN}identity${NC}  <shift>               Record an identity evolution
+  ${GREEN}reindex${NC}  [--force]             Embed all memories with vectors
+
+${YELLOW}Environment:${NC}
+  AMENTI_DB       Database path (default: amenti.db)
+  AMENTI_AGENT    Agent ID (default: default)
+  AMENTI_CONFIG   Config file path (default: ~/.config/amenti/config or ~/.amentirc)
+
+${YELLOW}Config file:${NC}
+  Create ~/.config/amenti/config or ~/.amentirc with:
+    AMENTI_DB=/path/to/amenti.db
+    AMENTI_AGENT=your_agent_name
+  Config file values are used when env vars are not set.
+
+${YELLOW}Examples:${NC}
+  amenti search "deployment issues" --type fact --min-confidence 0.8
+  amenti store --type fact --content "User loves sim racing" --confidence 0.95 --tags "hobby,racing"
+  amenti budget 2000
+  amenti tasks --status open --priority high
+  amenti link 5 12 --relation supports
+EOF
+    exit 0
+}
+
+# ---- Helpers ----
+
+sql() {
+    sqlite3 -batch "$DB" "$1"
+}
+
+sql_json() {
+    sqlite3 -batch -json "$DB" "$1" 2>/dev/null || sqlite3 -batch -header -column "$DB" "$1"
+}
+
+now_epoch() {
+    date +%s
+}
+
+token_est() {
+    echo $(( ${#1} / 4 ))
+}
+
+esc() { printf '%s' "${1//\'/\'\'}"; }
+
+check_db() {
+    if [[ ! -f "$DB" ]]; then
+        echo -e "${RED}Error:${NC} Database not found at $DB"
+        echo "Run 'amenti init' to create it, or set AMENTI_DB"
+        exit 1
+    fi
+    # Auto-migrate: ensure llm_cache table exists
+    sqlite3 -batch "$DB" "CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at INTEGER NOT NULL);" 2>/dev/null || true
+}
+
+validate_int() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error:${NC} $2 must be a positive integer"
+        exit 1
+    fi
+}
+
+validate_num() {
+    if ! [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo -e "${RED}Error:${NC} $2 must be a number"
+        exit 1
+    fi
+}
+
+# ---- Embedding Helpers ----
+
+EMBED_PORT="${AMENTI_EMBED_PORT:-9819}"
+EMBED_URL="http://127.0.0.1:${EMBED_PORT}"
+
+# Check if embed server is running
+embed_available() {
+    curl -sf "${EMBED_URL}/health" > /dev/null 2>&1
+}
+
+# Embed a single text, returns JSON vector array (with llm_cache)
+embed_text() {
+    local text="$1"
+    local cache_hash
+    cache_hash=$(printf '%s' "$text" | sha256sum | cut -d' ' -f1)
+
+    # Check cache first
+    if [[ -f "$DB" ]]; then
+        local cached
+        cached=$(sqlite3 -batch "$DB" "SELECT result FROM llm_cache WHERE hash = '${cache_hash}';" 2>/dev/null) || true
+        if [[ -n "$cached" ]]; then
+            echo "$cached"
+            return 0
+        fi
+    fi
+
+    local payload
+    payload=$(python3 -c "import json; print(json.dumps({'text': '$( echo "$text" | sed "s/'/\\\\'/g" | tr '\n' ' ' )'}))")
+    local result
+    result=$(curl -sf -X POST "${EMBED_URL}/embed" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['vector']))")
+
+    # Cache the result
+    if [[ -n "$result" && "$result" != "null" && -f "$DB" ]]; then
+        local now
+        now=$(date +%s)
+        sqlite3 -batch "$DB" "INSERT OR IGNORE INTO llm_cache (hash, result, created_at) VALUES ('${cache_hash}', '$(echo "$result" | sed "s/'/''/g")', ${now});" 2>/dev/null || true
+    fi
+
+    echo "$result"
+}
+
+# Cosine similarity search via Python (works with JSON-stored vectors)
+vec_search() {
+    local query_text="$1"
+    local limit="${2:-5}"
+    local type_filter="${3:-}"
+    local confidence_filter="${4:-}"
+    local agent_filter="${5:-}"
+
+    # Get query vector
+    local query_vec
+    query_vec=$(embed_text "$query_text") || return 1
+
+    AMENTI_VEC_DB="$DB" \
+    AMENTI_VEC_QUERY="$query_vec" \
+    AMENTI_VEC_LIMIT="$limit" \
+    AMENTI_VEC_TYPE="$type_filter" \
+    AMENTI_VEC_CONFIDENCE="$confidence_filter" \
+    AMENTI_VEC_AGENT="$agent_filter" \
+    python3 -c "
+import sqlite3, json, os, sys
+
+db_path = os.environ['AMENTI_VEC_DB']
+query_vec = json.loads(os.environ['AMENTI_VEC_QUERY'])
+limit = int(os.environ['AMENTI_VEC_LIMIT'])
+type_filter = os.environ.get('AMENTI_VEC_TYPE', '')
+confidence_filter = os.environ.get('AMENTI_VEC_CONFIDENCE', '')
+agent_filter = os.environ.get('AMENTI_VEC_AGENT', '')
+
+db = sqlite3.connect(db_path)
+db.row_factory = sqlite3.Row
+
+# Get all active memories with embeddings
+where_clauses = ['is_active = 1', 'embedding IS NOT NULL']
+params = []
+if type_filter:
+    where_clauses.append('type = ?')
+    params.append(type_filter)
+if confidence_filter:
+    where_clauses.append('confidence >= ?')
+    params.append(float(confidence_filter))
+if agent_filter:
+    where_clauses.append('agent_id = ?')
+    params.append(agent_filter)
+
+where_sql = ' AND '.join(where_clauses)
+rows = db.execute(f'''
+    SELECT id, type, content, confidence, tags, agent_id, token_estimate,
+           created_at, updated_at, embedding
+    FROM memories WHERE {where_sql}
+''', params).fetchall()
+
+if not rows:
+    print('[]')
+    sys.exit(0)
+
+# Compute cosine similarity
+import math
+def cosine_sim(a, b):
+    dot = sum(x*y for x,y in zip(a,b))
+    na = math.sqrt(sum(x*x for x in a))
+    nb = math.sqrt(sum(x*x for x in b))
+    return dot / (na * nb) if na > 0 and nb > 0 else 0.0
+
+results = []
+for row in rows:
+    vec = json.loads(row['embedding'])
+    sim = cosine_sim(query_vec, vec)
+    if sim > 0.25:  # minimum similarity threshold
+        results.append({
+            'id': row['id'],
+            'type': row['type'],
+            'content': row['content'],
+            'confidence': row['confidence'],
+            'tags': row['tags'],
+            'agent_id': row['agent_id'],
+            'token_estimate': row['token_estimate'],
+            'created_at': row['created_at'],
+            'updated_at': row['updated_at'],
+            'match_type': 'vector',
+            'similarity': round(sim, 4)
+        })
+
+results.sort(key=lambda x: x['similarity'], reverse=True)
+print(json.dumps(results[:limit], indent=2, default=str))
+db.close()
+"
+}
+
+# ---- Commands ----
+
+cmd_init() {
+    if [[ -f "$DB" ]]; then
+        echo -e "${YELLOW}Database already exists at $DB${NC}"
+        read -p "Reinitialize? This will DELETE all data. (y/N) " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || exit 0
+        rm "$DB"
+    fi
+
+    local schema_dir
+    schema_dir="$(dirname "$(readlink -f "$0")")/../src"
+    if [[ -f "$schema_dir/schema.sql" ]]; then
+        sqlite3 "$DB" < "$schema_dir/schema.sql"
+    else
+        echo -e "${RED}Error:${NC} schema.sql not found at $schema_dir/schema.sql"
+        exit 1
+    fi
+    # Ensure llm_cache table exists (also handles upgrades of existing DBs)
+    sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at INTEGER NOT NULL);"
+    echo -e "${GREEN}✅ Database initialized at $DB${NC}"
+
+    # Create config file if it doesn't exist (solves env var inheritance for spawned agents)
+    local config_dir="$HOME/.config/amenti"
+    local config_file="$config_dir/config"
+    if [[ ! -f "$config_file" && ! -f "$HOME/.amentirc" ]]; then
+        mkdir -p "$config_dir"
+        cat > "$config_file" <<CONF
+AMENTI_DB=$(readlink -f "$DB")
+AMENTI_AGENT=$AGENT_ID
+CONF
+        echo -e "${GREEN}✅ Config written to $config_file${NC}"
+    fi
+}
+
+cmd_search() {
+    check_db
+    local query="$1"; shift
+    local type_filter="" confidence_filter="" limit="10" agent_filter="" search_logs=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type) type_filter="$2"; shift 2 ;;
+            --min-confidence) validate_num "$2" "min-confidence"; confidence_filter="$2"; shift 2 ;;
+            --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
+            --agent) agent_filter="$2"; shift 2 ;;
+            --logs) search_logs="1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    # RRF (Reciprocal Rank Fusion) search pipeline:
+    # 1. FTS5 full-text search (weight 2.0) + BM25 normalization
+    # 2. LIKE fallback (weight 0.5)
+    # 3. Vector search if available (weight 1.5)
+    # Strong signal short-circuit: skip vector if top FTS hit is dominant
+    # Results fused with RRF scoring
+
+    # Phase 1: FTS5 + LIKE (single Python call, writes intermediate JSON to temp files)
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+
+    AMENTI_SEARCH_DB="$DB" \
+    AMENTI_SEARCH_QUERY="$query" \
+    AMENTI_SEARCH_LIMIT="$limit" \
+    AMENTI_SEARCH_LOGS="$search_logs" \
+    AMENTI_SEARCH_TYPE="$type_filter" \
+    AMENTI_SEARCH_CONFIDENCE="$confidence_filter" \
+    AMENTI_SEARCH_AGENT="$agent_filter" \
+    AMENTI_TMPDIR="$tmpdir" \
+    python3 -c "
+import sqlite3, json, sys, os
+
+db_path = os.environ['AMENTI_SEARCH_DB']
+query = os.environ['AMENTI_SEARCH_QUERY']
+limit = int(os.environ['AMENTI_SEARCH_LIMIT'])
+search_logs = os.environ.get('AMENTI_SEARCH_LOGS', '')
+type_filter = os.environ.get('AMENTI_SEARCH_TYPE', '')
+confidence_filter = os.environ.get('AMENTI_SEARCH_CONFIDENCE', '')
+agent_filter = os.environ.get('AMENTI_SEARCH_AGENT', '')
+tmpdir = os.environ['AMENTI_TMPDIR']
+
+db = sqlite3.connect(db_path)
+db.row_factory = sqlite3.Row
+
+extra_where = []
+extra_params = []
+if type_filter:
+    extra_where.append('AND m.type = ?')
+    extra_params.append(type_filter)
+if confidence_filter:
+    extra_where.append('AND m.confidence >= ?')
+    extra_params.append(float(confidence_filter))
+if agent_filter:
+    extra_where.append('AND m.agent_id = ?')
+    extra_params.append(agent_filter)
+extra_sql = ' '.join(extra_where)
+
+def norm_bm25(raw):
+    a = abs(raw)
+    return a / (1.0 + a)
+
+# Strategy 1: FTS5 with BM25 scores
+fts_results = []
+try:
+    sql = f'''
+        SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
+               m.token_estimate, m.created_at, m.updated_at,
+               bm25(memories_fts) as bm25_raw
+        FROM memories_fts f JOIN memories m ON f.rowid = m.id
+        WHERE memories_fts MATCH ? AND m.is_active = 1 {extra_sql}
+        ORDER BY f.rank LIMIT ?
+    '''
+    for row in db.execute(sql, [query] + extra_params + [limit]):
+        d = dict(row)
+        d['relevance'] = round(norm_bm25(d.pop('bm25_raw', 0)), 4)
+        d['match_type'] = 'fts5'
+        fts_results.append(d)
+except Exception:
+    pass
+
+# Strong signal short-circuit check
+skip_vector = False
+if len(fts_results) >= 1:
+    top = fts_results[0]['relevance']
+    second = fts_results[1]['relevance'] if len(fts_results) >= 2 else 0.0
+    if top >= 0.85 and (top - second) >= 0.15:
+        skip_vector = True
+
+# Strategy 2: LIKE fallback
+like_results = []
+words = query.split()
+if words:
+    like_clauses = ' OR '.join(['(m.content LIKE ? OR m.tags LIKE ?)'] * len(words))
+    like_params = []
+    for w in words:
+        like_params.extend([f'%{w}%', f'%{w}%'])
+    try:
+        sql = f'''
+            SELECT m.id, m.type, m.content, m.confidence, m.tags, m.agent_id,
+                   m.token_estimate, m.created_at, m.updated_at
+            FROM memories m
+            WHERE m.is_active = 1 AND ({like_clauses}) {extra_sql}
+            ORDER BY m.confidence DESC LIMIT ?
+        '''
+        for row in db.execute(sql, like_params + extra_params + [limit]):
+            d = dict(row)
+            d['match_type'] = 'like'
+            like_results.append(d)
+    except Exception:
+        pass
+
+# Daily logs search
+if search_logs == '1' or (len(fts_results) == 0 and len(like_results) == 0):
+    try:
+        for row in db.execute('''
+            SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
+                   dl.agent_id, 'daily_log' as match_type
+            FROM daily_logs_fts f JOIN daily_logs dl ON f.rowid = dl.id
+            WHERE daily_logs_fts MATCH ?
+            ORDER BY f.rank LIMIT ?
+        ''', (query, 3)):
+            like_results.append(dict(row))
+    except Exception:
+        pass
+    if len(like_results) == 0 and words:
+        dl_clauses = ' OR '.join(['dl.content LIKE ?'] * len(words))
+        dl_params = [f'%{w}%' for w in words]
+        try:
+            for row in db.execute(f'''
+                SELECT dl.id, dl.date, dl.category, substr(dl.content, 1, 500) as content,
+                       dl.agent_id, 'daily_log_like' as match_type
+                FROM daily_logs dl WHERE {dl_clauses}
+                ORDER BY dl.date DESC LIMIT 3
+            ''', dl_params):
+                like_results.append(dict(row))
+        except Exception:
+            pass
+
+with open(os.path.join(tmpdir, 'fts.json'), 'w') as f: json.dump(fts_results, f, default=str)
+with open(os.path.join(tmpdir, 'like.json'), 'w') as f: json.dump(like_results, f, default=str)
+with open(os.path.join(tmpdir, 'skip'), 'w') as f: f.write('1' if skip_vector else '0')
+db.close()
+" 2>/dev/null
+
+    # Phase 2: Vector search (skip if strong signal short-circuit)
+    local skip_vec_flag vec_file="$tmpdir/vec.json"
+    skip_vec_flag=$(cat "$tmpdir/skip" 2>/dev/null || echo "0")
+    echo "[]" > "$vec_file"
+
+    if [[ "$skip_vec_flag" != "1" ]] && embed_available; then
+        vec_search "$query" "$limit" "$type_filter" "$confidence_filter" "$agent_filter" > "$vec_file" 2>/dev/null || echo "[]" > "$vec_file"
+    fi
+
+    # Phase 3: RRF Fusion
+    local results
+    results=$(AMENTI_TMPDIR="$tmpdir" \
+              AMENTI_LIMIT="$limit" \
+              python3 -c "
+import json, os
+
+tmpdir = os.environ['AMENTI_TMPDIR']
+limit = int(os.environ['AMENTI_LIMIT'])
+
+with open(os.path.join(tmpdir, 'fts.json')) as f: fts = json.load(f)
+with open(os.path.join(tmpdir, 'like.json')) as f: like = json.load(f)
+with open(os.path.join(tmpdir, 'vec.json')) as f: vec = json.load(f)
+
+K = 60
+TOP_BONUS = 0.05
+WEIGHTS = {'fts': 2.0, 'like': 0.5, 'vec': 1.5}
+
+scores = {}
+metadata = {}
+
+def add_list(results, weight):
+    for rank, item in enumerate(results):
+        rid = item.get('id')
+        if rid is None:
+            continue
+        rrf_score = weight / (K + rank + 1)
+        if rank == 0:
+            rrf_score += TOP_BONUS
+        scores[rid] = scores.get(rid, 0) + rrf_score
+        if rid not in metadata:
+            metadata[rid] = item
+        else:
+            for key in ('relevance', 'similarity'):
+                if key in item and key not in metadata[rid]:
+                    metadata[rid][key] = item[key]
+
+add_list(fts, WEIGHTS['fts'])
+add_list(like, WEIGHTS['like'])
+add_list(vec, WEIGHTS['vec'])
+
+ranked = sorted(scores.items(), key=lambda x: -x[1])
+
+output = []
+for rid, rrf_score in ranked[:limit]:
+    entry = metadata[rid]
+    entry['rrf_score'] = round(rrf_score, 4)
+    output.append(entry)
+
+print(json.dumps(output, indent=2, default=str))
+" 2>/dev/null)
+
+    echo "$results"
+}
+
+cmd_store() {
+    check_db
+    local type="" content="" source="direct statement" confidence="0.95" tags="" agent="$AGENT_ID"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type) type="$2"; shift 2 ;;
+            --content) content="$2"; shift 2 ;;
+            --source) source="$2"; shift 2 ;;
+            --confidence) validate_num "$2" "confidence"; confidence="$2"; shift 2 ;;
+            --tags) tags="$2"; shift 2 ;;
+            --agent) agent="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$type" || -z "$content" ]]; then
+        echo -e "${RED}Error:${NC} --type and --content are required"
+        echo "Types: fact, preference, relationship, principle, commitment, moment, skill, pattern"
+        exit 1
+    fi
+
+    local now
+    now=$(now_epoch)
+    local tokens
+    tokens=$(token_est "$content")
+
+    local id
+    id=$(sql "INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
+         VALUES ('$(esc "$type")', '$(esc "$content")', '$(esc "$source")', ${confidence}, '$(esc "$tags")', ${tokens}, '$(esc "$agent")', ${now}, ${now});
+         SELECT last_insert_rowid();")
+
+    # Auto-embed if embed server is running
+    if embed_available; then
+        local embed_input="${content} ${tags}"
+        local vec
+        vec=$(embed_text "$embed_input" 2>/dev/null) || true
+        if [[ -n "$vec" && "$vec" != "null" ]]; then
+            sql "UPDATE memories SET embedding = '$(esc "$vec")' WHERE id = ${id};"
+            echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens}, 🧬 embedded)"
+        else
+            echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
+        fi
+    else
+        echo -e "${GREEN}✅ Stored memory #${id}${NC} (type: ${type}, confidence: ${confidence}, tokens: ~${tokens})"
+    fi
+}
+
+cmd_recall() {
+    check_db
+    local id="$1"
+    validate_int "$id" "memory ID"
+
+    echo -e "${CYAN}=== Memory #${id} ===${NC}"
+    sql_json "SELECT * FROM memories WHERE id = ${id};"
+
+    local links
+    links=$(sql "SELECT COUNT(*) FROM memory_links WHERE source_id = ${id} OR target_id = ${id};")
+    if [[ "$links" -gt 0 ]]; then
+        echo -e "\n${CYAN}=== Linked Memories ===${NC}"
+        sql_json "
+            SELECT ml.relation,
+                   CASE WHEN ml.source_id = ${id} THEN ml.target_id ELSE ml.source_id END as linked_id,
+                   m.type, m.content, m.confidence
+            FROM memory_links ml
+            JOIN memories m ON m.id = CASE WHEN ml.source_id = ${id} THEN ml.target_id ELSE ml.source_id END
+            WHERE (ml.source_id = ${id} OR ml.target_id = ${id})
+            AND m.is_active = 1;
+        "
+    fi
+}
+
+cmd_link() {
+    check_db
+    local source="$1" target="$2"; shift 2
+    validate_int "$source" "source ID"
+    validate_int "$target" "target ID"
+    local relation="related"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --relation) relation="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+    sql "INSERT INTO memory_links (source_id, target_id, relation, created_at)
+         VALUES (${source}, ${target}, '$(esc "$relation")', ${now});"
+    echo -e "${GREEN}✅ Linked #${source} → #${target} (${relation})${NC}"
+}
+
+cmd_forget() {
+    check_db
+    local id="$1"
+    validate_int "$id" "memory ID"
+    local now
+    now=$(now_epoch)
+    sql "UPDATE memories SET is_active = 0, updated_at = ${now} WHERE id = ${id};"
+    echo -e "${YELLOW}Memory #${id} deactivated${NC}"
+}
+
+cmd_supersede() {
+    check_db
+    local old_id="$1"; shift
+    validate_int "$old_id" "memory ID"
+    local content="" type="" confidence="" tags=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --content) content="$2"; shift 2 ;;
+            --type) type="$2"; shift 2 ;;
+            --confidence) confidence="$2"; shift 2 ;;
+            --tags) tags="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$content" ]]; then
+        echo -e "${RED}Error:${NC} --content is required"
+        exit 1
+    fi
+
+    # Get old memory's type if not specified
+    if [[ -z "$type" ]]; then
+        type=$(sql "SELECT type FROM memories WHERE id = ${old_id};")
+    fi
+    if [[ -z "$confidence" ]]; then
+        confidence=$(sql "SELECT confidence FROM memories WHERE id = ${old_id};")
+    fi
+
+    local now
+    now=$(now_epoch)
+    local tokens
+    tokens=$(token_est "$content")
+
+    # Atomic: deactivate old, insert new, auto-link, return new ID
+    local new_id
+    new_id=$(sql "
+        BEGIN;
+        UPDATE memories SET is_active = 0, updated_at = ${now} WHERE id = ${old_id};
+        INSERT INTO memories (type, content, source, confidence, tags, token_estimate, agent_id, supersedes_id, created_at, updated_at)
+            VALUES ('$(esc "$type")', '$(esc "$content")', 'superseded', ${confidence}, '$(esc "$tags")', ${tokens}, '$(esc "$AGENT_ID")', ${old_id}, ${now}, ${now});
+        INSERT INTO memory_links (source_id, target_id, relation, created_at)
+            VALUES ((SELECT MAX(id) FROM memories), ${old_id}, 'supersedes', ${now});
+        SELECT MAX(id) FROM memories;
+        COMMIT;
+    ")
+
+    echo -e "${GREEN}✅ Memory #${old_id} superseded by #${new_id}${NC}"
+}
+
+cmd_tasks() {
+    check_db
+    local status_filter="" priority_filter="" agent_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --status) status_filter="AND status = '$(esc "$2")'"; shift 2 ;;
+            --priority) priority_filter="AND priority = '$(esc "$2")'"; shift 2 ;;
+            --agent) agent_filter="AND agent_id = '$(esc "$2")'"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    sql_json "
+        SELECT id, description, priority, status, due_date, agent_id, created_at
+        FROM action_items
+        WHERE 1=1 ${status_filter} ${priority_filter} ${agent_filter}
+        ORDER BY
+            CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 END,
+            created_at;
+    "
+}
+
+cmd_task() {
+    check_db
+    local action="" description="" priority="normal" source="" due_date="" id=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --add) action="add"; shift ;;
+            --done) validate_int "$2" "task ID"; action="done"; id="$2"; shift 2 ;;
+            --cancel) validate_int "$2" "task ID"; action="cancel"; id="$2"; shift 2 ;;
+            --progress) validate_int "$2" "task ID"; action="progress"; id="$2"; shift 2 ;;
+            --description) description="$2"; shift 2 ;;
+            --priority) priority="$2"; shift 2 ;;
+            --source) source="$2"; shift 2 ;;
+            --due) due_date="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+
+    case "$action" in
+        add)
+            if [[ -z "$description" ]]; then
+                echo -e "${RED}Error:${NC} --description required"; exit 1
+            fi
+            sql "INSERT INTO action_items (description, source, priority, status, due_date, agent_id, created_at)
+                 VALUES ('$(esc "$description")', '$(esc "$source")', '$(esc "$priority")', 'open', $([ -n "$due_date" ] && echo "'$(esc "$due_date")'" || echo "NULL"), '$(esc "$AGENT_ID")', ${now});"
+            echo -e "${GREEN}✅ Task added${NC}"
+            ;;
+        done)
+            sql "UPDATE action_items SET status = 'done', completed_at = ${now} WHERE id = ${id};"
+            echo -e "${GREEN}✅ Task #${id} completed${NC}"
+            ;;
+        cancel)
+            sql "UPDATE action_items SET status = 'cancelled' WHERE id = ${id};"
+            echo -e "${YELLOW}Task #${id} cancelled${NC}"
+            ;;
+        progress)
+            sql "UPDATE action_items SET status = 'in_progress' WHERE id = ${id};"
+            echo -e "${CYAN}Task #${id} in progress${NC}"
+            ;;
+        *)
+            echo -e "${RED}Error:${NC} Specify --add, --done <id>, --cancel <id>, or --progress <id>"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_questions() {
+    check_db
+    local status_filter="AND status = 'open'"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --status) status_filter="AND status = '$(esc "$2")'"; shift 2 ;;
+            --all) status_filter=""; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    sql_json "SELECT id, question, context, status, answer, created_at
+              FROM open_questions WHERE 1=1 ${status_filter}
+              ORDER BY created_at DESC;"
+}
+
+cmd_ask() {
+    check_db
+    local question="$1"; shift
+    local context=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --context) context="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+    sql "INSERT INTO open_questions (question, context, status, agent_id, created_at)
+         VALUES ('$(esc "$question")', '$(esc "$context")', 'open', '$(esc "$AGENT_ID")', ${now});"
+    echo -e "${GREEN}✅ Question stored${NC}"
+}
+
+cmd_answer() {
+    check_db
+    local id="$1" answer="$2"
+    validate_int "$id" "question ID"
+    local now
+    now=$(now_epoch)
+    sql "UPDATE open_questions SET status = 'answered', answer = '$(esc "$answer")', resolved_at = ${now} WHERE id = ${id};"
+    echo -e "${GREEN}✅ Question #${id} answered${NC}"
+}
+
+cmd_log() {
+    check_db
+    local content="$1"; shift
+    local category="conversation"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --category) category="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+    local today
+    today=$(date +%Y-%m-%d)
+    sql "INSERT INTO daily_logs (date, category, content, agent_id, created_at)
+         VALUES ('${today}', '$(esc "$category")', '$(esc "$content")', '$(esc "$AGENT_ID")', ${now});"
+    echo -e "${GREEN}✅ Logged${NC}"
+}
+
+cmd_logs() {
+    check_db
+    local date_filter="" search="" limit="20"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --date) date_filter="AND date = '$(esc "$2")'"; shift 2 ;;
+            --search) search="$2"; shift 2 ;;
+            --limit) validate_int "$2" "limit"; limit="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -n "$search" ]]; then
+        sql_json "
+            SELECT dl.id, dl.date, dl.category, dl.content, dl.agent_id
+            FROM daily_logs_fts f
+            JOIN daily_logs dl ON f.rowid = dl.id
+            WHERE daily_logs_fts MATCH '$(esc "$search")'
+            ${date_filter}
+            ORDER BY dl.date DESC, dl.created_at DESC
+            LIMIT ${limit};
+        "
+    else
+        sql_json "
+            SELECT id, date, category, content, agent_id
+            FROM daily_logs
+            WHERE 1=1 ${date_filter}
+            ORDER BY date DESC, created_at DESC
+            LIMIT ${limit};
+        "
+    fi
+}
+
+cmd_reflect() {
+    check_db
+    local summary="$1"; shift
+    local memories="" questions="" identity=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --memories) memories="$2"; shift 2 ;;
+            --questions) questions="$2"; shift 2 ;;
+            --identity) identity="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+    local today
+    today=$(date +%Y-%m-%d)
+
+    sql "INSERT INTO reflections (date, summary, memories_extracted, questions_generated, identity_shifts, agent_id, created_at)
+         VALUES ('${today}', '$(esc "$summary")', '$(esc "$memories")', '$(esc "$questions")', '$(esc "$identity")', '$(esc "$AGENT_ID")', ${now});"
+    echo -e "${GREEN}✅ Reflection stored${NC}"
+}
+
+cmd_state() {
+    check_db
+    if [[ $# -eq 0 ]]; then
+        sql_json "SELECT key, value, updated_at FROM agent_state WHERE agent_id = '$(esc "$AGENT_ID")' ORDER BY key;"
+        return
+    fi
+
+    local key="$1"
+    if [[ $# -eq 1 ]]; then
+        sql "SELECT value FROM agent_state WHERE key = '$(esc "$key")' AND agent_id = '$(esc "$AGENT_ID")';"
+        return
+    fi
+
+    local value="$2"
+    local now
+    now=$(now_epoch)
+    sql "INSERT OR REPLACE INTO agent_state (key, value, agent_id, updated_at)
+         VALUES ('$(esc "$key")', '$(esc "$value")', '$(esc "$AGENT_ID")', ${now});"
+    echo -e "${GREEN}✅ State updated: ${key} = ${value}${NC}"
+}
+
+cmd_budget() {
+    check_db
+    local max_tokens="$1"
+    validate_int "$max_tokens" "max_tokens"
+    local agent_filter=""
+
+    [[ $# -gt 1 ]] && [[ "$2" == "--agent" ]] && agent_filter="AND agent_id = '$(esc "$3")'"
+
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${RED}Error:${NC} python3 required for budget command"
+        exit 1
+    fi
+
+    sql_json "
+        SELECT id, type, content, confidence, token_estimate,
+               SUM(token_estimate) OVER (ORDER BY confidence DESC, updated_at DESC) as cumulative_tokens
+        FROM memories
+        WHERE is_active = 1 ${agent_filter}
+        ORDER BY confidence DESC, updated_at DESC;
+    " | python3 -c "
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+    budget = int(sys.argv[1])
+    selected = [r for r in rows if r.get('cumulative_tokens', 0) <= budget]
+    print(json.dumps(selected, indent=2))
+    total = sum(r.get('token_estimate', 0) for r in selected)
+    print(f'\n--- {len(selected)} memories, ~{total} tokens (budget: {budget})', file=sys.stderr)
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+" "$max_tokens" 2>&1
+}
+
+cmd_stats() {
+    check_db
+    echo -e "${CYAN}=== Amenti Stats ===${NC}"
+    echo -n "Memories (active):    "; sql "SELECT COUNT(*) FROM memories WHERE is_active = 1;"
+    echo -n "Memories (total):     "; sql "SELECT COUNT(*) FROM memories;"
+    echo -n "Memory links:         "; sql "SELECT COUNT(*) FROM memory_links;"
+    echo -n "Daily logs:           "; sql "SELECT COUNT(*) FROM daily_logs;"
+    echo -n "Reflections:          "; sql "SELECT COUNT(*) FROM reflections;"
+    echo -n "Action items (open):  "; sql "SELECT COUNT(*) FROM action_items WHERE status IN ('open','in_progress');"
+    echo -n "Open questions:       "; sql "SELECT COUNT(*) FROM open_questions WHERE status = 'open';"
+    echo -n "Identity shifts:      "; sql "SELECT COUNT(*) FROM identity_evolution;"
+    echo -n "Token estimate:       "; sql "SELECT COALESCE(SUM(token_estimate),0) FROM memories WHERE is_active = 1;"
+    echo ""
+    echo -e "${CYAN}=== By Type ===${NC}"
+    sql_json "SELECT type, COUNT(*) as count, ROUND(AVG(confidence),2) as avg_confidence FROM memories WHERE is_active = 1 GROUP BY type ORDER BY count DESC;"
+    echo ""
+    echo -e "${CYAN}=== Agents ===${NC}"
+    sql_json "SELECT agent_id, COUNT(*) as memories FROM memories WHERE is_active = 1 GROUP BY agent_id;"
+}
+
+cmd_export() {
+    check_db
+    local type_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type) type_filter="AND type = '$(esc "$2")'"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    sql_json "SELECT * FROM memories WHERE is_active = 1 ${type_filter} ORDER BY type, confidence DESC;"
+}
+
+cmd_identity() {
+    check_db
+    local shift_text="$1"; shift
+    local trigger_text=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --trigger) trigger_text="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local now
+    now=$(now_epoch)
+    local today
+    today=$(date +%Y-%m-%d)
+
+    sql "INSERT INTO identity_evolution (date, shift, trigger, agent_id, created_at)
+         VALUES ('${today}', '$(esc "$shift_text")', '$(esc "$trigger_text")', '$(esc "$AGENT_ID")', ${now});"
+    echo -e "${GREEN}✅ Identity shift recorded${NC}"
+}
+
+cmd_reindex() {
+    check_db
+    local script_dir
+    script_dir="$(dirname "$(readlink -f "$0")")/../scripts"
+    if [[ -f "$script_dir/reindex.sh" ]]; then
+        AMENTI_DB="$DB" bash "$script_dir/reindex.sh" "$@"
+    else
+        echo -e "${RED}Error:${NC} reindex.sh not found at $script_dir/reindex.sh"
+        exit 1
+    fi
+}
+
+# ---- Router ----
+
+[[ $# -eq 0 ]] && usage
+
+cmd="$1"; shift
+
+case "$cmd" in
+    search)     cmd_search "$@" ;;
+    store)      cmd_store "$@" ;;
+    recall)     cmd_recall "$@" ;;
+    link)       cmd_link "$@" ;;
+    forget)     cmd_forget "$@" ;;
+    supersede)  cmd_supersede "$@" ;;
+    tasks)      cmd_tasks "$@" ;;
+    task)       cmd_task "$@" ;;
+    questions)  cmd_questions "$@" ;;
+    ask)        cmd_ask "$@" ;;
+    answer)     cmd_answer "$@" ;;
+    log)        cmd_log "$@" ;;
+    logs)       cmd_logs "$@" ;;
+    reflect)    cmd_reflect "$@" ;;
+    state)      cmd_state "$@" ;;
+    budget)     cmd_budget "$@" ;;
+    stats)      cmd_stats "$@" ;;
+    export)     cmd_export "$@" ;;
+    init)       cmd_init ;;
+    identity)   cmd_identity "$@" ;;
+    reindex)    cmd_reindex "$@" ;;
+    help|--help|-h) usage ;;
+    *)
+        echo -e "${RED}Unknown command: ${cmd}${NC}"
+        echo "Run 'amenti help' for usage"
+        exit 1
+        ;;
+esac
