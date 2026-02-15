@@ -34,6 +34,24 @@ pm2 start src/embed_server.py --name amenti-embed --interpreter python3
 
 ---
 
+## Agent Skill Package
+
+Amenti includes a ready-to-use skill package for AI agents. Copy `skill/` folder to your agent's skills directory:
+
+```
+skill/
+├── SKILL.md                  # Main skill file with YAML frontmatter
+└── references/
+    └── distillation-guide.md # Migration guide (loaded on demand)
+```
+
+The skill follows the [Anthropic Agent Skills format](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf) with:
+- **Progressive disclosure** - Frontmatter triggers → SKILL.md body → references/
+- **Rich description** - Trigger phrases for automatic loading
+- **Troubleshooting section** - Common issues and solutions
+
+---
+
 ## How It Works
 
 | Traditional | Amenti |
