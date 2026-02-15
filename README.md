@@ -10,24 +10,19 @@ Amenti replaces bloated context files with a SQLite-backed memory system using *
 
 ## Quickstart
 
+**One-liner install:**
 ```bash
-# 1. Clone
+curl -sSL https://raw.githubusercontent.com/raulvidis/amenti/main/install.sh | bash
+```
+
+**Manual install:**
+```bash
 git clone https://github.com/raulvidis/amenti.git
 cd amenti
-
-# 2. Set environment
-export AMENTI_DB=/path/to/your/workspace/amenti.db
+export AMENTI_DB=/path/to/amenti.db
 export AMENTI_AGENT=your_agent_name
-
-# 3. Initialize database
 ./scripts/init-db.sh
-
-# 4. Install CLI
 ln -s $(pwd)/bin/amenti /usr/local/bin/amenti
-
-# 5. Test it
-amenti store --type fact --content "Hello, memory!" --confidence 0.95 --tags "test"
-amenti search "hello"
 ```
 
 **With vector embeddings (recommended):**
