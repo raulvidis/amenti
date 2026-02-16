@@ -1,65 +1,66 @@
-# MEMORY.md — Active Context
+# MEMORY.md — Amenti Tag Index
 
-*This file is loaded every session. Keep it under 3k tokens.*
-*Your real memories are in the Amenti database. This file helps you find them.*
+*Last updated: YYYY-MM-DD*
+
+**This file is a portal to Amenti DB. All knowledge lives there.**
+**Usage:** Find matching tags below → `amenti search "tag1 tag2"`
 
 ---
 
-## Active Tasks
-
-<!-- Only tasks you're working on THIS WEEK. Completed → amenti log. -->
-
-## Topics
+## Tags
 
 <!--
-Each row is a TOPIC — a cluster of related memories in your database.
-The Keywords column lists EVERY word someone might use to ask about this topic.
-More keywords = more ways to find the memory. Think synonyms, aliases, abbreviations.
+Each row maps a topic to search tags for Amenti DB.
+This table contains NO knowledge — only pointers.
 
 When someone asks a question:
 1. Scan this table — which topic matches?
-2. Pick 2-4 keywords from that row
-3. Run: amenti search "keyword1 keyword2 keyword3"
-4. Answer from the search result, NOT from this table
+2. Run: amenti search "tag1 tag2 tag3"
+3. Answer from the search result, NOT from this table
 
-This table is a LOOKUP INDEX. It does NOT contain answers.
-ALWAYS search the database before answering.
+When you store a new memory:
+1. amenti store --type TYPE --content "..." --confidence X --tags "..."
+2. If new topic: add a row here with relevant search tags
+3. If existing topic: add new tags if needed
+
+TIPS:
+- Include synonyms and how someone would casually ask
+- 5-15 tags per topic is ideal
+- Use spaces not hyphens (FTS5 treats hyphens as one token)
+- Keep the table lean — combine related topics
 -->
 
-| Topic | Keywords |
+| Topic | Search Tags |
 |---|---|
 
 <!--
 EXAMPLE (delete when you add real entries):
 
-| Topic | Keywords |
+| Topic | Search Tags |
 |---|---|
-| relationships | partner, relationship, long distance, dating, family, friends, love |
-| hobbies & gear | hobby, equipment, setup, hardware, stats, competitive, gear, pedals, wheel, seat, accessories |
-| docker restart lesson | docker, restart, policy, maximumretrycount, on-failure, retry, limit, container, restart loop, infinite |
-| charger incident feb 8 | charger, water, soaked, wet, rice, bag, dry, broken, feb 8 |
-
-TIPS:
-- Include the actual terms from the stored memory
-- Include synonyms (partner/significant other, rig/setup/hardware)
-- Include abbreviations and numbers (API, 8443, v2)
-- Include how someone would casually ask ("what happened to my charger")
-- 10-20 keywords per topic is ideal
-- Group related memories under one topic when they overlap
-- NEVER use hyphens in keywords. Use spaces: "new york" not "new-york", "long distance" not "long-distance"
-- FTS5 treats hyphens as part of one token — "new-york" won't match a search for "new york"
+| User — basics | `name age timezone location sleep schedule` |
+| User — work | `developer job career fullstack corporate goals` |
+| Relationships | `partner girlfriend boyfriend long distance dating` |
+| Hardware setup | `sim rig wheel pedals seat hardware equipment` |
+| Docker lessons | `docker restart container deployment pm2 nginx` |
 -->
-
-## Hot Context
-
-<!-- Things that come up daily. Move to DB once no longer active (1-2 weeks max). -->
 
 ---
 
-### Rules for this file
+## Hot Context
 
-1. **Under 3k tokens.** If it's growing, move knowledge to DB with `amenti store`.
-2. **Topics = pointers.** Never answer from the table — always search the DB first.
-3. **Sync the table.** Every store → add keywords to the matching topic (or create a new topic). Every forget → remove the topic if no memories left.
-4. **Fat keywords.** More keywords = better recall. Think: how would someone ask about this 6 months from now?
-5. **Only active items.** Completed tasks → `amenti log`. Lessons → `amenti store`.
+<!-- Active situation context. Things that come up daily. Max 3-5 lines. -->
+<!-- Move to DB once no longer active (1-2 weeks max). -->
+
+---
+
+*All knowledge in Amenti DB. This file is just the map.*
+*Store: `amenti store --type TYPE --content "..." --confidence X --tags "..."`*
+*Search: `amenti search "keywords"`*
+
+### Rules
+1. **Under 3k tokens.** This is loaded every session.
+2. **Tags = pointers.** Never answer from the table — always search DB first.
+3. **Sync on store.** Every `amenti store` → update tags here.
+4. **Fat tags.** More tags = better recall. Think: how would someone ask about this 6 months from now?
+5. **No knowledge here.** If you catch yourself writing facts in this file, stop and `amenti store` instead.

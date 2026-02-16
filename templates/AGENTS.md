@@ -4,7 +4,7 @@
 
 **MEMORY.md is your scratchpad. Amenti DB is your brain.**
 
-MEMORY.md holds what you're actively working on — it's loaded every call, so keep it tiny.
+MEMORY.md is a **tag index** — a portal to Amenti DB. It holds search tags, hot context, and nothing else.
 Everything you've ever learned, experienced, or been told lives in the Amenti database.
 
 ---
@@ -23,13 +23,9 @@ amenti store --type fact --content "The actual information" \
 
 Tags are how you'll find it later — be generous with synonyms and related terms.
 
-**Then immediately update the Memory Index in MEMORY.md:**
+**Then update the Tags table in MEMORY.md:**
 
-```markdown
-| User trains 7 hours per week | training, gym, fitness, hours, workout |
-```
-
-This is critical — the Memory Index is how you know what's in the DB. No index entry = you'll never search for it.
+Add or update search tags for the relevant topic. No tags entry = you'll never search for it.
 
 ### When you finish a task or learn a lesson:
 
@@ -49,17 +45,14 @@ Add it to MEMORY.md (active context). When done → log it → remove from MEMOR
 
 ### The 3-Layer Lookup (follow this order):
 
-**Layer 1: MEMORY.md (zero cost — already loaded)**
-Check your active context first. If the answer is here, use it. Done.
+**Layer 1: MEMORY.md Hot Context (zero cost — already loaded)**
+Check active context first. If the answer is here, use it. Done.
 
-**Layer 1.5: Memory Index (zero cost — already loaded)**
-Scan the Memory Index table in MEMORY.md. Find matching tags → use those exact tags to search the DB. This tells you *what you know* without spending tokens.
-
-**Layer 2: Amenti DB (low cost — ~400 tokens per search)**
-If MEMORY.md doesn't have it, but the Memory Index does:
+**Layer 2: MEMORY.md Tags → Amenti DB (primary recall)**
+Scan the Tags table in MEMORY.md. Find matching tags → search Amenti:
 
 ```bash
-amenti search "relevant keywords"
+amenti search "tag1 tag2 tag3"
 ```
 
 One search. If no results, try 1-2 alternative keywords:
@@ -68,6 +61,9 @@ One search. If no results, try 1-2 alternative keywords:
 - Key noun: "partner" or "hobby"
 
 **Max 3 searches per topic.** If nothing after 3, you don't know it.
+
+**Layer 2.5: memory_search tool (fallback only)**
+Only if Amenti returns nothing useful. This searches MEMORY.md and memory/*.md files using embeddings.
 
 **Layer 3: Ask the user**
 Don't guess. Don't confabulate. Say "I don't have that in my memory."
@@ -148,7 +144,7 @@ During reflection cycles:
    ```
 
 4. **Clean MEMORY.md** — remove anything that just got stored in DB
-5. **Verify Memory Index** — every stored memory must have a row in the index table
+5. **Verify Tags table** — every stored memory must have a row in the index table
 
 5. **Check for contradictions:**
    ```bash
@@ -207,32 +203,30 @@ amenti export         # Review all imported memories
 ```
 Fix any misclassified types or low-confidence entries.
 
-### Step 3: Build the Memory Index
-For every stored memory, add a row to the Memory Index table in MEMORY.md:
+### Step 3: Build the Tags table
+For every stored memory, add a row to the Tags table in MEMORY.md:
 ```markdown
-| Brief Description | Tags |
+| Topic | Search Tags |
 |---|---|
-| User's partner abroad | partner, relationship, long distance, abroad |
-| Docker restart policy | docker, restart, on-failure, container |
+| Relationships | `partner long distance abroad dating` |
+| Docker lessons | `docker restart on-failure container` |
 ```
 This is how you'll know what's in the DB without searching.
 
 ### Step 4: Trim MEMORY.md
 Remove everything except:
-- The Memory Index table
-- Active tasks (this week only)
-- Hot context (referenced daily)
-- Key people (names only, details in DB)
+- The Tags table (topic → search tags)
+- Hot context (max 3-5 lines, things that come up daily)
 
-Target: <3k tokens.
+Target: <3k tokens. MEMORY.md is a portal, not a knowledge store.
 
 ### Migration Checklist
 - [ ] Run `migrate.sh` on your workspace
 - [ ] Verify with `amenti stats` — memories, tasks, questions all imported
-- [ ] Build Memory Index table with a row per stored memory
-- [ ] Trim MEMORY.md to index + active tasks + hot context
+- [ ] Build Tags table with a row per topic
+- [ ] Trim MEMORY.md to tags + hot context only
 - [ ] Verify MEMORY.md is under 3k tokens
-- [ ] Test: ask yourself a question, find it via index → search → answer
+- [ ] Test: ask yourself a question, find it via tags → search → answer
 
 ---
 
