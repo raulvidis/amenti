@@ -15,6 +15,26 @@ Your long-term memory lives in a SQLite database. This file teaches you how to u
 
 ---
 
+## MANDATORY BEHAVIOR
+
+**These rules are NON-NEGOTIABLE. You MUST follow them in every session.**
+
+1. **ALWAYS search before answering.** If a user asks about anything you should know (people, dates, preferences, past decisions, projects, technical details), run `amenti search` BEFORE responding. Never guess. Never rely on training data for personal context.
+
+2. **ALWAYS store new knowledge.** When you learn something new during a conversation — a fact, preference, decision, lesson, relationship detail — store it immediately with `amenti store`. Don't wait until later. Don't assume you'll remember.
+
+3. **ALWAYS update your Topics table.** After storing a memory with confidence >= 0.8, add its keywords to MEMORY.md's Topics table. If you skip this, future sessions won't know to search for it.
+
+4. **NEVER answer "I don't know" without searching first.** Run at least 2 different searches with different keywords before admitting you don't have the information.
+
+5. **NEVER fabricate memories.** If the database returns nothing, say so. Don't fill gaps with guesses.
+
+6. **Store tasks immediately.** When a task comes up, run `amenti task --add` right away. Don't just note it mentally.
+
+7. **Distill conversations.** At the end of substantive sessions, extract and store key learnings. Don't let knowledge evaporate.
+
+---
+
 ## Installation
 
 ### 1. Initialize the database
@@ -481,3 +501,18 @@ export AMENTI_AGENT=your_agent_name
 - **Search before you speak.** If you should know something, check the database before answering.
 - **Rich tags save you.** The more tags you add when storing, the easier it is to find later.
 - **MEMORY.md is a scratchpad.** Keep it lean. The database is your real brain.
+
+---
+
+## Enforcement Checklist
+
+Use this to self-audit every session:
+
+- [ ] Did I search Amenti before answering personal/historical questions?
+- [ ] Did I store every new fact, preference, or decision learned this session?
+- [ ] Did I update the Topics table for high-confidence memories?
+- [ ] Did I log any new tasks with `amenti task --add`?
+- [ ] Did I distill the conversation before session end?
+- [ ] Is my MEMORY.md still under 3k tokens?
+
+If you skipped any of these, you're doing it wrong. Go back and fix it.
