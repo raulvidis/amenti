@@ -79,6 +79,37 @@ export AMENTI_AGENT="default"
 "$INSTALL_DIR/scripts/init-db.sh"
 echo -e "${GREEN}✓ Database initialized${NC}"
 
+# Install agent skill package
+echo -e "${CYAN}Installing agent skill package...${NC}"
+SKILLS_DIR="${AMENTI_SKILLS_DIR:-}"
+
+# Auto-detect skills directory
+if [ -z "$SKILLS_DIR" ]; then
+    for candidate in \
+        "$HOME/.openclaw/workspace/skills" \
+        "$HOME/.claude/skills" \
+        "$HOME/.agent/skills" \
+        "$HOME/skills"; do
+        if [ -d "$candidate" ]; then
+            SKILLS_DIR="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -n "$SKILLS_DIR" ]; then
+    mkdir -p "$SKILLS_DIR/amenti/references"
+    cp "$INSTALL_DIR/skill/SKILL.md" "$SKILLS_DIR/amenti/SKILL.md"
+    if [ -d "$INSTALL_DIR/skill/references" ]; then
+        cp -r "$INSTALL_DIR/skill/references/"* "$SKILLS_DIR/amenti/references/" 2>/dev/null || true
+    fi
+    echo -e "${GREEN}✓ Skill installed to $SKILLS_DIR/amenti/${NC}"
+else
+    echo -e "${CYAN}No agent skills directory detected. To install manually:${NC}"
+    echo -e "  ${CYAN}cp -r $INSTALL_DIR/skill/ <your-skills-dir>/amenti/${NC}"
+    echo -e "  ${CYAN}Or set AMENTI_SKILLS_DIR and re-run.${NC}"
+fi
+
 # Done
 echo ""
 echo -e "${GREEN}╔═════════════════════════════════════════╗${NC}"

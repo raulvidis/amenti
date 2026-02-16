@@ -36,19 +36,23 @@ pm2 start src/embed_server.py --name amenti-embed --interpreter python3
 
 ## Agent Skill Package
 
-Amenti includes a ready-to-use skill package for AI agents. Copy `skill/` folder to your agent's skills directory:
+Amenti includes a ready-to-use skill package for AI agents. The install script **automatically detects your agent's skills directory** and copies everything into place — no manual setup needed.
+
+After installation, your agent gets:
 
 ```
-skill/
+<agent-skills-dir>/amenti/
 ├── SKILL.md                  # Main skill file with YAML frontmatter
 └── references/
     └── distillation-guide.md # Migration guide (loaded on demand)
 ```
 
 The skill follows the [Anthropic Agent Skills format](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf) with:
-- **Progressive disclosure** - Frontmatter triggers → SKILL.md body → references/
-- **Rich description** - Trigger phrases for automatic loading
-- **Troubleshooting section** - Common issues and solutions
+- **Progressive disclosure** — Frontmatter triggers → SKILL.md body → references/
+- **Rich description** — Trigger phrases for automatic loading
+- **Troubleshooting section** — Common issues and solutions
+
+> If your agent uses a non-standard skills directory, set `AMENTI_SKILLS_DIR` before running the installer.
 
 ---
 
@@ -234,10 +238,17 @@ See `templates/SKILL.md` for the full migration guide.
 
 ## Requirements
 
-- SQLite3
-- Bash 4+
-- Python 3.8+ (for embeddings, optional)
-- sentence-transformers (for embeddings, optional)
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **CPU** | Any x86_64 / ARM64 | 2+ cores |
+| **RAM** | 256MB (no embeddings) | 1GB (with embed server) |
+| **Disk** | 50MB + DB size | 500MB (model + DB growth) |
+| **SQLite** | 3.35+ (FTS5 support) | 3.40+ |
+| **Bash** | 4.0+ | 5.0+ |
+| **Python** | 3.8+ (embeddings only) | 3.10+ |
+| **OS** | Linux, macOS | Ubuntu 22.04+, macOS 13+ |
+
+The embed server loads `all-MiniLM-L6-v2` (~80MB model) and uses ~500MB RAM at runtime. Without embeddings, Amenti runs on virtually anything — a Raspberry Pi, a VPS, a laptop.
 
 ---
 
