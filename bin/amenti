@@ -27,8 +27,16 @@ _load_config() {
 }
 _load_config
 
-# Database path: env var > config file > default
-DB="${AMENTI_DB:-amenti.db}"
+# Database path: env var > config file > workspace default > fallback
+if [[ -z "${AMENTI_DB:-}" ]]; then
+    if [[ -f "$HOME/.openclaw/workspace/amenti.db" ]]; then
+        DB="$HOME/.openclaw/workspace/amenti.db"
+    else
+        DB="amenti.db"
+    fi
+else
+    DB="$AMENTI_DB"
+fi
 AGENT_ID="${AMENTI_AGENT:-default}"
 
 # Colors
