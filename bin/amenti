@@ -277,7 +277,7 @@ db.close()
 cmd_init() {
     if [[ -f "$DB" ]]; then
         echo -e "${YELLOW}Database already exists at $DB${NC}"
-        read -p "Reinitialize? This will DELETE all data. (y/N) " -n 1 -r
+        read -p "Reinitialize? This will DELETE all data. (y/N) " -n 1 -r || true
         echo
         [[ $REPLY =~ ^[Yy]$ ]] || exit 0
         rm "$DB"
