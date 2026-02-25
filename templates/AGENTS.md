@@ -1,5 +1,20 @@
 # AGENTS.md — Memory-Augmented Agent Guide
 
+## ⚡ MEMORY RULE — READ THIS FIRST
+
+**Store into Amenti immediately when anything significant happens.**
+Decisions, configs, architecture, user preferences, task outcomes, lessons — store them NOW, not later.
+Heartbeat crons run isolated with no conversation context. They cannot distill for you.
+**You are the only one who can store memories during a live session.**
+
+```bash
+amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,keyword2"
+```
+
+Then update the Tags table in MEMORY.md if it's a new topic.
+
+---
+
 ## Golden Rule
 
 **MEMORY.md is your scratchpad. Amenti DB is your brain.**
@@ -124,9 +139,29 @@ Don't guess. Don't confabulate. Say "I don't have that in my memory."
 
 ---
 
+## Real-Time Storage (Primary Strategy)
+
+**Store into Amenti immediately — don't wait for reflection or heartbeats.**
+
+Heartbeat crons run in isolated sessions with no conversation context. They cannot distill your conversations for you. **You are the only one who can store memories during a live session.**
+
+Store the moment it matters:
+- User tells you a preference → store it
+- You make an architectural decision → store it
+- A task is completed → store it
+- You learn something useful → store it
+
+```bash
+amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,keyword2"
+```
+
+Then update the Tags table in MEMORY.md if it's a new topic.
+
+---
+
 ## Reflection with Amenti
 
-During reflection cycles:
+During reflection cycles (idle periods, not heartbeat crons):
 
 1. **Store new memories** from the session:
    ```bash
@@ -146,7 +181,7 @@ During reflection cycles:
 4. **Clean MEMORY.md** — remove anything that just got stored in DB
 5. **Verify Tags table** — every stored memory must have a row in the index table
 
-5. **Check for contradictions:**
+6. **Check for contradictions:**
    ```bash
    amenti search "topic of new memory"
    ```
