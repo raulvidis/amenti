@@ -76,6 +76,29 @@ class EmbedHandler(BaseHTTPRequestHandler):
                 "model": MODEL_NAME,
             })
 
+        elif self.path == "/v1/embeddings":
+            # OpenAI-compatible endpoint for integration with OpenClaw memory search
+            input_data = body.get("input", "")
+            if isinstance(input_data, str):
+                input_data = [input_data]
+            if not input_data:
+                self._respond(400, {"error": "missing input field"})
+                return
+            vectors = model.encode(input_data, normalize_embeddings=True).tolist()
+            data = []
+            for i, vec in enumerate(vectors):
+                data.append({
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": vec,
+                })
+            self._respond(200, {
+                "object": "list",
+                "data": data,
+                "model": MODEL_NAME,
+                "usage": {"prompt_tokens": 0, "total_tokens": 0},
+            })
+
         elif self.path == "/embed_batch":
             texts = body.get("texts", [])
             if not texts or not isinstance(texts, list):
