@@ -6,6 +6,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DB="${AMENTI_DB:-amenti.db}"
 
 if [[ ! -f "$DB" ]]; then
@@ -13,7 +14,7 @@ if [[ ! -f "$DB" ]]; then
     exit 1
 fi
 
-sql() { sqlite3 -batch "$DB" "$1"; }
+source "$SCRIPT_DIR/../lib/helpers.sh"
 
 echo "=== Amenti Smart Cleanup ==="
 echo "Database: $DB"
@@ -32,12 +33,12 @@ now = int(time.time())
 promoted = 0
 
 rows = db.execute(
-    \"\"\"SELECT id, memories_extracted FROM reflections
+    \"\"\"SELECT id, memories_extracted, agent_id FROM reflections
        WHERE distilled = 0 AND date < date('now', '-30 days')
        AND memories_extracted IS NOT NULL AND memories_extracted != ''\"\"\"
 ).fetchall()
 
-for ref_id, memories_json in rows:
+for ref_id, memories_json, ref_agent in rows:
     try:
         data = json.loads(memories_json)
         for m in data:
@@ -45,9 +46,10 @@ for ref_id, memories_json in rows:
                 db.execute(
                     '''INSERT OR IGNORE INTO memories
                        (type, content, source, confidence, tags, token_estimate, agent_id, created_at, updated_at)
-                       VALUES (?, ?, 'auto-promoted from reflection', ?, ?, ?, 'default', ?, ?)''',
+                       VALUES (?, ?, 'auto-promoted from reflection', ?, ?, ?, ?, ?, ?)''',
                     (m.get('type', 'fact'), m['content'], m['confidence'],
-                     m.get('tags', ''), len(m['content']) // 4, now, now))
+                     m.get('tags', ''), len(m['content']) // 4,
+                     ref_agent or 'default', now, now))
                 promoted += 1
     except Exception as e:
         print(f'Error processing reflection {ref_id}: {e}', __import__('sys').stderr)

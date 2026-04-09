@@ -10,8 +10,8 @@ Amenti is a SQLite-backed persistent memory system for AI agents. It replaces la
 
 Pure Bash + SQLite. No package manager, no build system. Requires: SQLite3, Bash, Python3.
 
-- **CLI:** Single Bash script (`bin/amenti`, ~740 lines) using a command router pattern
-- **Database:** SQLite3 with WAL mode, FTS5 full-text search (Porter stemming + Unicode61)
+- **CLI:** Single Bash script (`bin/amenti`) using a command router pattern with shared helpers (`lib/helpers.sh`)
+- **Database:** SQLite3 with WAL mode, FTS5 full-text search (Porter stemming + Unicode61). Schema versioning via `schema_version` table.
 - **Python3:** Used in `search` and `budget` commands for JSON parsing and parameterized queries
 
 ## Commands
@@ -42,9 +42,9 @@ Session activity → daily_logs (30-day, FTS5) → reflections → memories (per
                                                             → identity_evolution
 ```
 
-### Database Schema (8 tables in `src/schema.sql`)
+### Database Schema (10 tables in `src/schema.sql`)
 
-- **memories** + **memories_fts** — Permanent knowledge store. FTS5 indexes content/type/tags. Triggers auto-calculate `token_estimate` (length/4) and keep FTS in sync. Confidence scored 0.0-1.0.
+- **memories** + **memories_fts** — Permanent knowledge store. FTS5 indexes content/type/tags. Triggers auto-calculate `token_estimate` (length/4) and keep FTS in sync. Confidence scored 0.0-1.0. Optional `embedding` column for vector search.
 - **memory_links** — Graph relationships between memories (supports, contradicts, depends_on, related, supersedes).
 - **daily_logs** + **daily_logs_fts** — Raw session notes with 30-day retention. Marked `distilled=1` after processing.
 - **reflections** — Structured processing that produces memories, action_items, open_questions, and identity_evolution entries.
@@ -52,6 +52,8 @@ Session activity → daily_logs (30-day, FTS5) → reflections → memories (per
 - **open_questions** — Low-confidence observations (< 0.50) stored as questions rather than memories.
 - **agent_state** — Key-value runtime state, composite PK of (key, agent_id).
 - **identity_evolution** — Tracks how the agent's personality shifts over time.
+- **llm_cache** — Caches embedding results by SHA256 hash.
+- **schema_version** — Tracks applied schema migrations.
 
 6 views: `v_active_memories`, `v_session_context`, `v_open_actions`, `v_pending_distillation`, `v_context_budget`, `v_memory_graph`.
 
@@ -61,16 +63,17 @@ Session activity → daily_logs (30-day, FTS5) → reflections → memories (per
 - **Confidence scoring:** 0.95-1.0 = directly stated, 0.80-0.94 = strongly implied, 0.50-0.79 = inferred (mark for validation), < 0.50 = store as open_question not memory.
 - **Multi-agent:** All tables scoped by `agent_id` (default: "default"). Set via `AMENTI_AGENT` env var. Agents share one DB.
 - **Smart retention:** `scripts/cleanup.sh` auto-promotes high-confidence (>=0.80) memories before deleting 30-day-old distilled logs/reflections. Stales questions at 30d, cancels tasks at 60d.
-- **FTS5 over vectors:** Intentional — zero dependencies, zero API costs, keyword search is sufficient for structured agent memories.
+- **Hybrid search:** FTS5 as primary index (zero dependencies), optional vector embeddings for semantic similarity. RRF fusion combines all three strategies.
 
 ### CLI Structure (`bin/amenti`)
 
-Command router dispatches to `cmd_*()` functions. SQL executed via `sql()` (raw) and `sql_json()` (JSON/formatted output) wrappers. Single quotes in content escaped with `''` for SQL injection prevention. 19 commands: search, store, recall, link, forget, supersede, tasks, task, questions, ask, answer, log, logs, reflect, identity, state, budget, stats, export, init.
+Command router dispatches to `cmd_*()` functions. SQL executed via `sql()` (raw) and `sql_json()` (JSON/formatted output) wrappers. Sensitive values use Python parameterized queries. 21 commands: search, store, recall, link, forget, supersede, tasks, task, questions, ask, answer, log, logs, reflect, identity, state, budget, stats, export, init, reindex.
 
 ### Templates
 
 - `templates/MEMORY.md` — Minimal task-only scratchpad loaded each session (~500 tokens minimal, <3k target)
 - `templates/SKILL.md` — Teaches agents when to search, what to store, how to maintain Amenti
+- `templates/AGENTS.md` — Full agent integration guide for AGENTS.md files
 
 ## Memory Types
 

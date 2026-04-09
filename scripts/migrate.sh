@@ -6,6 +6,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DB="${AMENTI_DB:-amenti.db}"
 AGENT_ID="${AMENTI_AGENT:-default}"
 WORKSPACE="${1:-.}"
@@ -15,8 +16,8 @@ if [[ ! -f "$DB" ]]; then
     exit 1
 fi
 
-sql() { sqlite3 -batch "$DB" "$1"; }
-esc() { printf '%s' "${1//\'/\'\'}"; }
+source "$SCRIPT_DIR/../lib/helpers.sh"
+
 NOW=$(date +%s)
 
 echo "=== Amenti Migration ==="

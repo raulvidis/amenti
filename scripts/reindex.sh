@@ -26,6 +26,9 @@ for candidate in [os.environ.get('AMENTI_CONFIG',''), os.path.expanduser('~/.con
 
 DB="${AMENTI_DB:-amenti.db}"
 FORCE="${1:-}"
+if [[ "$FORCE" == "--force" ]]; then
+    export AMENTI_REINDEX_FORCE="1"
+fi
 
 echo "=== Amenti Vector Reindex ==="
 echo "Database: $DB"
@@ -65,17 +68,17 @@ fi
 # Batch embed — grab all texts, send to server, update DB
 echo "Embedding $COUNT memories..."
 
-python3 << 'PYEOF'
+python3 << PYEOF
 import sqlite3, json, os, sys, urllib.request
 
 db_path = os.environ.get("AMENTI_DB", "amenti.db")
 embed_url = f"http://127.0.0.1:{os.environ.get('AMENTI_EMBED_PORT', '9819')}"
-force = len(sys.argv) > 1 and sys.argv[1] == "--force"
+force = os.environ.get("AMENTI_REINDEX_FORCE", "") == "1"
 
 db = sqlite3.connect(db_path)
 db.row_factory = sqlite3.Row
 
-if force or os.environ.get("REINDEX_FORCE"):
+if force:
     rows = db.execute("SELECT id, content, tags FROM memories WHERE is_active = 1").fetchall()
 else:
     rows = db.execute("SELECT id, content, tags FROM memories WHERE is_active = 1 AND embedding IS NULL").fetchall()

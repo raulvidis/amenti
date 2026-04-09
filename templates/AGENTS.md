@@ -11,7 +11,7 @@ Heartbeat crons run isolated with no conversation context. They cannot distill f
 amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,keyword2"
 ```
 
-Then update the Tags table in MEMORY.md if it's a new topic.
+Then update the Topics table in MEMORY.md if it's a new topic.
 
 ---
 
@@ -19,7 +19,7 @@ Then update the Tags table in MEMORY.md if it's a new topic.
 
 **MEMORY.md is your scratchpad. Amenti DB is your brain.**
 
-MEMORY.md is a **tag index** — a portal to Amenti DB. It holds search tags, hot context, and nothing else.
+MEMORY.md is a **topic index** — a portal to Amenti DB. It holds search keywords, hot context, and nothing else.
 Everything you've ever learned, experienced, or been told lives in the Amenti database.
 
 ---
@@ -38,7 +38,7 @@ amenti store --type fact --content "The actual information" \
 
 Tags are how you'll find it later — be generous with synonyms and related terms.
 
-**Then update the Tags table in MEMORY.md:**
+**Then update the Topics table in MEMORY.md:**
 
 Add or update search tags for the relevant topic. No tags entry = you'll never search for it.
 
@@ -64,7 +64,7 @@ Add it to MEMORY.md (active context). When done → log it → remove from MEMOR
 Check active context first. If the answer is here, use it. Done.
 
 **Layer 2: MEMORY.md Tags → Amenti DB (primary recall)**
-Scan the Tags table in MEMORY.md. Find matching tags → search Amenti:
+Scan the Topics table in MEMORY.md. Find matching tags → search Amenti:
 
 ```bash
 amenti search "tag1 tag2 tag3"
@@ -155,7 +155,7 @@ Store the moment it matters:
 amenti store --type TYPE --content "..." --confidence 0.95 --tags "keyword1,keyword2"
 ```
 
-Then update the Tags table in MEMORY.md if it's a new topic.
+Then update the Topics table in MEMORY.md if it's a new topic.
 
 ---
 
@@ -179,7 +179,7 @@ During reflection cycles (idle periods, not heartbeat crons):
    ```
 
 4. **Clean MEMORY.md** — remove anything that just got stored in DB
-5. **Verify Tags table** — every stored memory must have a row in the index table
+5. **Verify Topics table** — every stored memory must have a row in the index table
 
 6. **Check for contradictions:**
    ```bash
@@ -238,8 +238,8 @@ amenti export         # Review all imported memories
 ```
 Fix any misclassified types or low-confidence entries.
 
-### Step 3: Build the Tags table
-For every stored memory, add a row to the Tags table in MEMORY.md:
+### Step 3: Build the Topics table
+For every stored memory, add a row to the Topics table in MEMORY.md:
 ```markdown
 | Topic | Search Tags |
 |---|---|
@@ -250,7 +250,7 @@ This is how you'll know what's in the DB without searching.
 
 ### Step 4: Trim MEMORY.md
 Remove everything except:
-- The Tags table (topic → search tags)
+- The Topics table (topic → search tags)
 - Hot context (max 3-5 lines, things that come up daily)
 
 Target: <3k tokens. MEMORY.md is a portal, not a knowledge store.
@@ -258,7 +258,7 @@ Target: <3k tokens. MEMORY.md is a portal, not a knowledge store.
 ### Migration Checklist
 - [ ] Run `migrate.sh` on your workspace
 - [ ] Verify with `amenti stats` — memories, tasks, questions all imported
-- [ ] Build Tags table with a row per topic
+- [ ] Build Topics table with a row per topic
 - [ ] Trim MEMORY.md to tags + hot context only
 - [ ] Verify MEMORY.md is under 3k tokens
 - [ ] Test: ask yourself a question, find it via tags → search → answer

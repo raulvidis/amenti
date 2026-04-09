@@ -189,12 +189,15 @@ pm2 save
 ```
 amenti/
 ├── bin/amenti          # CLI tool
+├── lib/helpers.sh      # Shared shell helpers (sql, esc, validators)
 ├── src/
-│   ├── schema.sql      # SQLite schema (8 tables, FTS5, triggers)
+│   ├── schema.sql      # SQLite schema (10 tables, FTS5, triggers)
+│   ├── schema_vec.sql  # Legacy vector migration (for upgrades)
 │   └── embed_server.py # Local embedding server
 ├── templates/
 │   ├── MEMORY.md       # Lean memory.md template
-│   └── SKILL.md        # Agent skill file
+│   ├── SKILL.md        # Agent skill file
+│   └── AGENTS.md       # Agent integration guide
 ├── scripts/
 │   ├── init-db.sh      # Initialize database
 │   ├── migrate.sh      # Migrate from file-based memory

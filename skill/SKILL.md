@@ -1,10 +1,10 @@
 ---
 name: amenti
-description: Persistent long-term memory system for AI agents. Use when you need to remember facts about your user, recall past conversations, store new learnings, search for information in your memory database, or manage tasks and questions. Trigger phrases include "remember this", "what do you know about", "recall", "search memory", "store this fact", "do I know anything about".
+description: Persistent long-term memory system for AI agents. Use when you need to remember facts about your user, recall past conversations, store new learnings, search for information in your memory database, or manage tasks and questions. Trigger phrases include "remember this", "what do you know about", "recall", "search memory", "store this fact", "do I know anything about", "set up amenti", "install amenti", "initialize memory".
 license: MIT
 metadata:
   author: Raul Vidis
-  version: 1.0.0
+  version: 1.1.0
   category: memory
   tags: [memory, persistence, sqlite, search, recall, storage]
 ---
@@ -15,38 +15,130 @@ Your long-term memory lives in a SQLite database. This file teaches you how to u
 
 ---
 
-## MANDATORY BEHAVIOR
+## ⚡ First-Time Setup (READ THIS FIRST)
 
-**These rules are NON-NEGOTIABLE. You MUST follow them in every session.**
+**When you first see this skill, check if Amenti is already set up:**
 
-1. **ALWAYS search before answering.** If a user asks about anything you should know (people, dates, preferences, past decisions, projects, technical details), run `amenti search` BEFORE responding. Never guess. Never rely on training data for personal context.
+```bash
+amenti stats 2>/dev/null
+```
 
-2. **ALWAYS store new knowledge.** When you learn something new during a conversation — a fact, preference, decision, lesson, relationship detail — store it immediately with `amenti store`. Don't wait until later. Don't assume you'll remember.
+**If the command works and shows memories** → Amenti is already running. Skip to "How Memory Works" below.
 
-3. **ALWAYS update your Topics table.** After storing a memory with confidence >= 0.8, add its keywords to MEMORY.md's Topics table. If you skip this, future sessions won't know to search for it.
+**If it fails or you have no memories** → Amenti needs to be set up. Message your human:
 
-4. **NEVER answer "I don't know" without searching first.** Run at least 2 different searches with different keywords before admitting you don't have the information.
+> Hey! I just noticed Amenti got installed — that's a long-term memory system 🧠
+>
+> It lets me remember things across our conversations — facts about you, lessons I learn, tasks, decisions. Instead of starting fresh every time, I'll actually build up knowledge over time.
+>
+> When you're ready, just say **"set up amenti"** and I'll:
+> - Initialize my memory database
+> - Update my AGENTS.md with memory instructions
+> - Create a MEMORY.md index file
+> - Start remembering things automatically
+>
+> It takes about 30 seconds. No data leaves your system — everything stays in a local SQLite database.
 
-5. **NEVER fabricate memories.** If the database returns nothing, say so. Don't fill gaps with guesses.
-
-6. **Store tasks immediately.** When a task comes up, run `amenti task --add` right away. Don't just note it mentally.
-
-7. **Distill conversations.** At the end of substantive sessions, extract and store key learnings. Don't let knowledge evaporate.
+**Then STOP and wait for the user to say "set up amenti" (or similar).** Do not proceed without their go-ahead.
 
 ---
 
-## Installation
+## 🔧 Setup (when the user says "set up amenti")
 
-### 1. Initialize the database
+Run these steps in order:
+
+### Step 1: Initialize the database
+
+```bash
+# Create config directory
+mkdir -p ~/.config/amenti
+
+# Set the database path (in your workspace)
+WORKSPACE_DIR="$(pwd)"
+echo "AMENTI_DB=${WORKSPACE_DIR}/amenti.db" > ~/.config/amenti/config
+echo "AMENTI_AGENT=$(whoami)" >> ~/.config/amenti/config
+
+# Initialize the database
+amenti init 2>/dev/null || echo "DB already exists"
+
+# Verify
+amenti stats
+```
+
+### Step 2: Update AGENTS.md
+
+Read `references/agent-integration.md` (in this skill's directory) for the full AGENTS.md template. Add the **Memory System** section to your existing AGENTS.md. Key points to add:
+
+- MEMORY.md is a tag index, Amenti DB is your brain
+- How to store: `amenti store --type TYPE --content "..." --confidence X --tags "..."`
+- How to search: check MEMORY.md tags → `amenti search "keywords"`
+- When to search vs not search
+- MEMORY.md hygiene rules (keep under 3k tokens)
+
+**Do NOT replace the user's existing AGENTS.md** — append the memory system section to it.
+
+### Step 3: Create or update MEMORY.md
+
+If MEMORY.md doesn't exist, create it from the template:
+
+```markdown
+# MEMORY.md — Amenti Tag Index
+
+*Last updated: TODAY_DATE*
+
+**This file is a portal to Amenti DB. All knowledge lives there.**
+**Usage:** Find matching tags below → `amenti search "tag1 tag2"`
+
+---
+
+## Tags
+
+| Topic | Search Tags |
+|---|---|
+
+---
+
+## Hot Context
+
+---
+
+*All knowledge in Amenti DB. This file is just the map.*
+*Store: `amenti store --type TYPE --content "..." --confidence X --tags "..."`*
+*Search: `amenti search "keywords"`*
+```
+
+If MEMORY.md already exists and has content, **migrate it first:**
+1. Read the existing MEMORY.md
+2. Store any facts/knowledge into Amenti: `amenti store --type fact --content "..." --confidence 0.9 --tags "..."`
+3. Build the Topics table from what you stored
+4. Replace the file content with the lean template above (keeping the Topics table populated)
+
+### Step 4: Confirm to the user
+
+> ✅ Amenti is set up! Here's what I did:
+> - Created my memory database at `amenti.db`
+> - Updated AGENTS.md with memory instructions
+> - Created MEMORY.md as my tag index
+>
+> From now on, I'll remember important things from our conversations — facts about you, decisions we make, lessons I learn. You can always ask me "what do you know about X?" and I'll check my memory.
+>
+> If you want me to remember something specific, just say "remember this: ..."
+
+---
+
+## Installation (manual / advanced)
+
+If you prefer to set things up manually instead of using the guided setup above:
+
+### Initialize the database
 
 ```bash
 export AMENTI_DB=/path/to/your/workspace/amenti.db
 export AMENTI_AGENT=your_agent_name
-cd /path/to/amenti && ./scripts/init-db.sh
-ln -sf /path/to/amenti/bin/amenti /usr/local/bin/amenti
+amenti init
 ```
 
-This creates a config file at `~/.config/amenti/config` so spawned agents and sub-processes can find the database without needing the env var. If the config file wasn't created automatically, create it manually:
+Create a config file so the CLI always finds the database:
 
 ```bash
 mkdir -p ~/.config/amenti
@@ -54,56 +146,22 @@ echo "AMENTI_DB=/path/to/your/workspace/amenti.db" > ~/.config/amenti/config
 echo "AMENTI_AGENT=your_agent_name" >> ~/.config/amenti/config
 ```
 
-### 2. Migrate your existing memory files
+### Migrate existing memory files
 
-If you have existing files (MEMORY.md, daily logs, reflections), migrate them into the database:
+If you have existing MEMORY.md, daily logs, or reflections:
 
 ```bash
 ./scripts/migrate.sh /path/to/your/workspace
 amenti stats  # verify everything imported
 ```
 
-### 3. Distill your MEMORY.md
+### Integrate with your agent workspace
 
-After migration, your MEMORY.md needs to become a slim lookup table. Do this yourself:
+See `references/agent-integration.md` for complete templates for AGENTS.md, MEMORY.md, SOUL.md, and HEARTBEAT.md.
 
-1. Read through your current MEMORY.md
-2. For every piece of knowledge (facts, lessons, rules, insights), verify it was migrated with `amenti search`
-3. If something was missed, store it manually: `amenti store --type TYPE --content "..." --confidence X --tags "keyword1,keyword2,..."`
-4. Build a Topics table in MEMORY.md (see template below)
-5. Delete everything from MEMORY.md except: Active Tasks, Topics table, Hot Context
-6. Target: under 3k tokens
+### Set up vector embeddings (optional but recommended)
 
-### 4. Update your AGENTS.md / CLAUDE.md
-
-Add a section to your agent configuration file explaining that Amenti is your brain. Something like:
-
-```
-## Memory System
-
-My long-term memory is stored in an Amenti database. MEMORY.md is my scratchpad — it contains
-active tasks, a Topics table (keyword lookup pointing to DB entries), and hot context.
-
-When I need to recall something:
-1. Check MEMORY.md Hot Context (already loaded, zero cost)
-2. Scan the Topics table — which topic matches?
-3. Pick 2-4 keywords from that topic's keyword list
-4. Run `amenti search "keyword1 keyword2 keyword3"` to get the full memory
-5. Answer from the search result — never from the Topics table alone
-
-When I learn something new:
-1. Store it: `amenti store --type TYPE --content "..." --confidence X --tags "..."`
-2. Add keywords to the matching topic in MEMORY.md (or create a new topic row)
-3. Remove raw knowledge from MEMORY.md (it's in the DB now)
-```
-
-Write this in your own words. The goal is that any future session loads MEMORY.md and immediately knows: my real memories are in the database, this file tells me how to find them.
-
----
-
-### 5. Set up vector embeddings (optional but recommended)
-
-Vector embeddings enable semantic search — finding memories by meaning, not just keywords. "Significant other studying abroad" will find "partner lives abroad" even without keyword overlap.
+Vector embeddings enable semantic search — finding memories by meaning, not just keywords. "Significant other studying abroad" will find "girlfriend in Nagoya, Japan" even without keyword overlap.
 
 **Requirements:** Python 3 + sentence-transformers
 
@@ -155,11 +213,11 @@ Your MEMORY.md has a `## Topics` table. Each row is a **topic** — a cluster of
 ```
 | Topic | Keywords |
 |---|---|
-| relationships | partner, relationship, long distance, dating, family, friends, love |
-| hobbies & gear | hobby, equipment, setup, hardware, stats, competitive, gear, pedals, wheel |
+| girlfriend & relationship | girlfriend, partner, iri, nagoya, japan, brain science, masters, long distance, dating, love |
+| sim racing rig & stats | iracing, sim racing, rig, setup, hardware, simagic, moza, simjack, pedals, wheel, road atlanta, gt3, 3k |
 ```
 
-The keywords are a **synonym expansion layer** on top of the database search. FTS5 only matches exact keywords — so if someone asks "what's your significant other's name?" but the memory says "partner", the search would miss. The Topics table bridges that gap by listing both "partner" AND "significant other" as keywords for the same topic.
+The keywords are a **synonym expansion layer** on top of the database search. FTS5 only matches exact keywords — so if someone asks "what's your partner's name?" but the memory says "girlfriend", the search would miss. The Topics table bridges that gap by listing both "girlfriend" AND "partner" as keywords for the same topic.
 
 **More keywords = better recall.** When building a topic row, think: what are all the different ways someone could ask about this? Include the exact terms from the stored memory, plus synonyms, abbreviations, casual phrasings, and numbers.
 
@@ -175,12 +233,12 @@ Every time you're asked a question about something you should know:
 4. **Search the database** — `amenti search "keyword1 keyword2 keyword3"`
 5. **Answer from the result** — include all relevant details the DB returned
 6. **If nothing found** — try different keywords from the same topic row
-7. **If still nothing** — try a broader search with just 1 core term (e.g., just "docker" or just "partner")
+7. **If still nothing** — try a broader search with just 1 core term (e.g., just "docker" or just "iri")
 8. **If truly nothing** — say "I don't have that in my memory"
 
 **Search tips:**
 - Use 2-3 keywords max per search — too many keywords can cause FTS5 to miss results
-- If "user developer fullstack startup" returns nothing, try just "developer startup"
+- If "raul developer fullstack esports" returns nothing, try just "developer esports"
 - Always try at least 2 different searches before giving up
 - The keywords in your Topics table are designed to match what's in the DB — trust them
 
@@ -316,8 +374,8 @@ amenti export --type skill
 All tables are scoped by agent ID. Each agent has its own memories.
 
 ```bash
-export AMENTI_AGENT=your_agent_name
-amenti search "calendar" --agent assistant_two    # search another agent's memories
+export AMENTI_AGENT=nova
+amenti search "calendar" --agent cleo    # search another agent's memories
 ```
 
 ---
@@ -454,7 +512,7 @@ When migrating from file-based memory to Amenti, see `references/distillation-gu
 **Solutions:**
 - Try different synonyms from the Topics table
 - Use fewer keywords (2-3 max)
-- Try just 1 core term (e.g., just "docker" or just "partner")
+- Try just 1 core term (e.g., just "docker" or just "iri")
 - Check if the memory exists: `amenti search "term" --limit 20`
 
 ### Memory not found after storing
@@ -501,18 +559,3 @@ export AMENTI_AGENT=your_agent_name
 - **Search before you speak.** If you should know something, check the database before answering.
 - **Rich tags save you.** The more tags you add when storing, the easier it is to find later.
 - **MEMORY.md is a scratchpad.** Keep it lean. The database is your real brain.
-
----
-
-## Enforcement Checklist
-
-Use this to self-audit every session:
-
-- [ ] Did I search Amenti before answering personal/historical questions?
-- [ ] Did I store every new fact, preference, or decision learned this session?
-- [ ] Did I update the Topics table for high-confidence memories?
-- [ ] Did I log any new tasks with `amenti task --add`?
-- [ ] Did I distill the conversation before session end?
-- [ ] Is my MEMORY.md still under 3k tokens?
-
-If you skipped any of these, you're doing it wrong. Go back and fix it.

@@ -103,25 +103,34 @@ identity_evolution (if role/personality shifted)
 - **`v_context_budget`** — Memories with running cumulative token total
 - **`v_memory_graph`** — Linked active memories with relation types
 
-## FTS5: Why Not Vector Embeddings?
+## Search: FTS5 + Vector Embeddings (Hybrid)
 
-| Feature | FTS5 | Vector DB |
-|---------|------|-----------|
-| Setup | Built into SQLite | Requires separate service |
-| Dependencies | None | Python libs, embedding model |
-| Speed | <1ms for most queries | Depends on index size |
-| Cost | Free | Embedding API calls |
-| Quality | Great for keyword/phrase | Better for semantic similarity |
-| Complexity | SQL queries | Vector math, indexes, tuning |
+Amenti uses a hybrid search approach:
 
-For agent memory, FTS5 is the right choice because:
+| Strategy | Weight | Example |
+|----------|--------|---------|
+| FTS5 (exact keywords) | 2.0 | "Docker restart policy" → finds exact match |
+| LIKE (partial match) | 0.5 | "deploy" → finds "deployment" |
+| Vector (semantic) | 1.5 | "significant other abroad" → finds "partner lives abroad" |
+
+Results are fused using Reciprocal Rank Fusion (RRF). A strong FTS5 signal short-circuits the vector search for performance.
+
+### FTS5: The Primary Index
+
+For agent memory, FTS5 is the right primary choice because:
 1. **Most agent memories are keyword-searchable** — "Docker restart policy" finds Docker memories
 2. **Zero additional cost** — no embedding API calls
 3. **Zero infrastructure** — just SQLite, no services to run
 4. **Porter stemming** — "running" matches "run", "runs", etc.
-5. **Good enough** — for structured memories with clear content, FTS5 works great
 
-If semantic search becomes necessary later, vector embeddings can be added alongside FTS5.
+### Vector Embeddings: Optional Semantic Layer
+
+Vector embeddings are an **optional enhancement** powered by a local embed server (all-MiniLM-L6-v2, 384 dimensions). They enable semantic similarity — finding memories by meaning, not just keywords.
+
+- Run `python3 src/embed_server.py` to start the embed server on localhost:9819
+- `amenti store` auto-embeds when the server is running
+- `amenti search` uses all three strategies when available
+- Without the embed server, everything works normally (FTS5 + LIKE only)
 
 ## Confidence Scoring
 

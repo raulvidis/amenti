@@ -1,6 +1,6 @@
 -- ============================================================
 -- Amenti — Persistent Memory for AI Agents
--- Schema v3 — 8 tables, smart retention, multi-agent, linked
+-- Schema v4 — 9 tables, smart retention, multi-agent, linked
 -- ============================================================
 --
 --   memories            — permanent knowledge (FTS5)
@@ -19,6 +19,12 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+);
+INSERT INTO schema_version (version, applied_at) VALUES (4, strftime('%s','now'));
 
 -- ============================================================
 -- 1. MEMORIES — Permanent knowledge store
@@ -44,6 +50,7 @@ CREATE TABLE memories (
     agent_id TEXT NOT NULL DEFAULT 'default',  -- Multi-agent: which agent owns this
     supersedes_id INTEGER,              -- If this replaces an older memory
     is_active INTEGER NOT NULL DEFAULT 1,
+    embedding TEXT,                      -- JSON array of floats for vector search
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (supersedes_id) REFERENCES memories(id)
@@ -84,11 +91,17 @@ CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
     VALUES ('delete', old.id, old.content, old.type, old.tags);
 END;
 
-CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
+CREATE TRIGGER memories_fts_update AFTER UPDATE OF content, type, tags ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content, type, tags)
     VALUES ('delete', old.id, old.content, old.type, old.tags);
     INSERT INTO memories_fts(rowid, content, type, tags)
     VALUES (new.id, new.content, new.type, new.tags);
+END;
+
+CREATE TRIGGER memories_fts_deactivate AFTER UPDATE OF is_active ON memories
+WHEN new.is_active = 0 AND old.is_active = 1 BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, type, tags)
+    VALUES ('delete', old.id, old.content, old.type, old.tags);
 END;
 
 -- Auto-deactivate memory when superseded
@@ -155,6 +168,13 @@ END;
 CREATE TRIGGER daily_logs_fts_delete AFTER DELETE ON daily_logs BEGIN
     INSERT INTO daily_logs_fts(daily_logs_fts, rowid, content, category)
     VALUES ('delete', old.id, old.content, old.category);
+END;
+
+CREATE TRIGGER daily_logs_fts_update AFTER UPDATE OF content, category ON daily_logs BEGIN
+    INSERT INTO daily_logs_fts(daily_logs_fts, rowid, content, category)
+    VALUES ('delete', old.id, old.content, old.category);
+    INSERT INTO daily_logs_fts(rowid, content, category)
+    VALUES (new.id, new.content, new.category);
 END;
 
 -- ============================================================
@@ -308,11 +328,20 @@ WHERE s.is_active = 1 AND t.is_active = 1;
 -- 9. LLM CACHE — Cache embedding/LLM responses
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS llm_cache (
+CREATE TABLE llm_cache (
     hash TEXT PRIMARY KEY,
     result TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+-- ============================================================
+-- 10. VECTOR EMBEDDINGS — stored as JSON on memories table
+-- ============================================================
+
+-- The embedding column is added via schema_vec.sql for upgrades.
+-- For fresh installs, include it directly:
+-- ALTER TABLE cannot run in a script with other CREATEs in some SQLite versions,
+-- so we define it here via a separate PRAGMA approach.
 
 -- ============================================================
 -- LIFECYCLE
